@@ -136,3 +136,48 @@ def test_lagging_replica_after_lease_fails_closed_not_open(tmp_path):
     cl.clock = lambda: real() + LEASE_S + 1           # time passes while node-b stays cut off
     assert code(cl.client(phone, "node-b").fetch, "report") == "node_stale"
     assert code(cl.client(bob, "node-b").fetch, "report") == "node_stale"
+
+
+@pytest.mark.parametrize("seed", range(12))
+def test_random_partitions_restarts_and_replays_never_unrevoke(tmp_path, seed):
+    import random
+    rnd = random.Random(seed)
+    cl, admin, alice, phone, bob = build(tmp_path)
+    time.sleep(0.02)
+    devices, revoked_by_node = [], {n: set() for n in NODES}
+    old_snaps, old_certs = [cl.primary.export_snapshot()], []
+    for i in range(14):
+        op = rnd.choice(["enroll_revoke", "partition", "heal", "restart", "pull", "replay_snap", "replay_cert", "tick"])
+        if op == "enroll_revoke":
+            d = Device.generate(f"tmp-{seed}-{i}", "alice")
+            admin.call("enroll_device", **d.public_args())
+            admin.call("revoke_device", device=d.device_id)
+            devices.append(d)
+        elif op == "partition":
+            cl.bus.partitioned.add(rnd.choice(["node-b", "node-c"]))
+        elif op == "heal":
+            cl.bus.partitioned.clear()
+        elif op == "restart":
+            cl.restart(rnd.choice(["node-b", "node-c"])); time.sleep(0.01)
+        elif op == "pull":
+            for n in ("node-b", "node-c"):
+                if n not in cl.bus.partitioned:
+                    cl.pull(n)
+        elif op == "replay_snap":
+            try:
+                cl.nodes[rnd.choice(["node-b", "node-c"])].install_snapshot(rnd.choice(old_snaps), cl.primary.pub)
+            except Denied:
+                pass
+        elif op == "replay_cert" and old_certs:
+            cl.nodes[rnd.choice(["node-b", "node-c"])].apply_cert(rnd.choice(old_certs), cl.primary.pub)
+        cl.bus.drain()
+        old_snaps.append(cl.primary.export_snapshot())
+        old_certs = cl.primary.all_certs()
+        for n, node in cl.all_nodes.items():                # monotone: a node never forgets a revocation
+            assert revoked_by_node[n] <= node.revoked, (op, n)
+            revoked_by_node[n] = set(node.revoked)
+    cl.bus.partitioned.clear()
+    cl.sync_all()
+    for d in devices:                                       # and once everyone has synced, nobody serves them
+        for n in NODES:
+            assert code(cl.client(d, n).call, "whoami") == "revoked", (seed, n, d.device_id)
