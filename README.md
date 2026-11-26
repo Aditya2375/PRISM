@@ -121,6 +121,8 @@ Operator CLI: `python -m kig.cli rotate-pending --url URL --key device.json` re-
 ```
 kig/crypto.py    hybrid HPKE KEM, ML-DSA, AES-256-GCM (cryptography package only)
 kig/vault.py     passphrase-sealed key files
+kig/keystore.py  pluggable key storage interface (file and memory stores)
+kig/threshold.py k-of-n split of a secret (vetted Shamir)
 kig/backup.py    signed encrypted backups, verify before restore
 kig/audit.py     signed hash-chained log + standalone verifier
 kig/store.py     signed snapshot + signed journal (O(1) writes)

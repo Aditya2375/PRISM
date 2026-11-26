@@ -245,3 +245,11 @@ Audit result wording: without `--expect-head` the verifier still prints a second
 established (an anchor beside the log is not independent, and entries could have been removed from the end). With a head
 you recorded elsewhere, tail removal is excluded. The `state` check says the journal is not checked and that an older
 signed snapshot also passes (rollback). `backup` rejects archives with duplicate member names.
+
+## Key storage interface
+
+`kig/keystore.py` defines `KeyStore` (`get(name)`, `put(name, secret)`). `GuardService(dir, keystore=...)` then keeps
+the signing key there instead of in `server_sign.key`. We ship `FileKeyStore` (0600 files, sealed by the passphrase
+vault when a passphrase is set) and `MemoryKeyStore` (tests). We ship no HSM or KMS driver: the interface is the seam
+for one, and it is not a claim of hardware protection. If the store and `server_sign.pub` disagree about whether a key
+exists, start-up refuses rather than generating a new key. Backup and the CLI still use their own key files.

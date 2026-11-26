@@ -95,7 +95,8 @@ def hmac_compare(a: str, b: str) -> bool:
 class GuardService:
     def __init__(self, data_dir: str | Path, clock: Callable[[], float] = time.time,
                  name: str = "primary", read_only: bool = False, lease_s: float | None = None,
-                 mono: Callable[[], float] = time.monotonic):
+                 mono: Callable[[], float] = time.monotonic, keystore=None):
+        self.keystore = keystore                   # optional kig.keystore.KeyStore for the signing key
         self.name = name
         self.mono = mono                           # the lease uses a monotonic clock, so a wall-clock step cannot matter
         self.lease_s = lease_s                     # replicas: refuse everything if not confirmed fresh this recently
@@ -162,7 +163,18 @@ class GuardService:
     def _load_server_key(self) -> None:
         sec_p, pub_p = self.dir / "server_sign.key", self.dir / "server_sign.pub"
         pw = vault.passphrase_from_env()
-        if sec_p.exists() and pub_p.exists():
+        if self.keystore is not None:
+            sec = self.keystore.get("server-sign")
+            if sec is not None and pub_p.exists():
+                self._sec, self.pub = sec, pub_p.read_bytes()
+            elif sec is None and not pub_p.exists():
+                self.pub, self._sec = c.sig_keygen()
+                self.keystore.put("server-sign", self._sec)
+                _atomic_write(pub_p, self.pub, 0o644)
+            else:
+                raise StateCorrupt("the key store and server_sign.pub disagree about whether a signing key exists; "
+                                   "refusing to generate a new one. Restore the missing part or a verified backup")
+        elif sec_p.exists() and pub_p.exists():
             raw = sec_p.read_bytes()
             self._sec = vault.open_(raw, pw, "prism/server-key") if vault.is_sealed(raw) else raw
             self.pub = pub_p.read_bytes()
