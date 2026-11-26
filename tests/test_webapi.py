@@ -241,3 +241,42 @@ def test_cli_entry_refuses_a_missing_key_file(tmp_path, capsys):
     from kig.webapi import main
     assert main(["--key", str(tmp_path / "nope.json"), "--url", "http://127.0.0.1:1"]) == 2
     assert main(["--key", "x", "--url", "u", "--port", "0"]) == 2
+
+
+def test_cors_headers_ride_on_401_and_bad_host_answers_too(tmp_path):
+    _, _, _, a, *_ = world(tmp_path)
+    ok = TestClient(create_web_app(a, TOKEN, cors_origins=["http://localhost:5173"]), base_url="http://127.0.0.1")
+    o = {"Origin": "http://localhost:5173"}
+    r = ok.get("/me", headers=o)
+    assert r.status_code == 401 and r.headers["access-control-allow-origin"] == "http://localhost:5173"
+    r = ok.get("/me", headers={**o, **H, "Host": "evil.example"})
+    assert r.status_code == 400 and r.headers["access-control-allow-origin"] == "http://localhost:5173"
+    assert "access-control-allow-origin" not in ok.get("/me", headers={"Origin": "http://evil.example"}).headers
+
+
+def test_ipv6_loopback_host_with_and_without_port(tmp_path):
+    _, _, _, a, *_ = world(tmp_path)
+    w = TestClient(create_web_app(a, TOKEN, cors_origins=[], port=8788), base_url="http://127.0.0.1")
+    for host, code in (("[::1]", 200), ("[::1]:8788", 200), ("[::1]:9999", 400), ("127.0.0.1:8788", 200), ("127.0.0.1", 200),
+                       ("localhost:8788", 200), ("127.0.0.1:1", 400), ("[::2]", 400), ("[::1]x", 400)):
+        assert w.get("/me", headers={**H, "Host": host}).status_code == code, host
+
+
+def test_command_names_are_short_lowercase_words_before_anything_is_logged(tmp_path):
+    svc, _, _, a, r, p, *_ = world(tmp_path)
+    n = len(svc.audit.entries)
+    from kig.service import Denied
+    for bad in ("<b>x", "A" * 65, "who ami", "", "whoami\n", "x" * 100000):
+        with pytest.raises(Denied) as e:
+            a.call(bad)
+        assert e.value.status == 400
+    assert len(svc.audit.entries) == n
+
+
+def test_every_string_in_activity_is_capped(tmp_path):
+    svc, _, _, a, *_ = world(tmp_path)
+    a.call("report_lost", device="asha-phone", reason="r" * 5000)
+    ents = web(a).get("/activity", headers=H).json()["entries"]
+    lost = [e for e in ents if e["type"] == "device.lost"][0]
+    assert len(lost["data"]["reason"]) <= 200
+    assert all(len(v) <= 200 for e in ents for v in e["data"].values() if isinstance(v, str))

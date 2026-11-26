@@ -51,17 +51,18 @@ def create_web_app(client: Client, token: str, cors_origins: list[str] | None = 
             raise ValueError("KIG_CORS_ORIGINS is set but lists no origin; unset it or give exact origins")
     for o in cors_origins:
         _check_origin(o)
-    if cors_origins:
-        from fastapi.middleware.cors import CORSMiddleware
-        app.add_middleware(CORSMiddleware, allow_origins=cors_origins, allow_credentials=False,
-                           allow_methods=["GET", "POST"], allow_headers=["content-type", HEADER])
-
     @app.middleware("http")
     async def guard(request: Request, call_next):
         # DNS rebinding: a page on another name that resolves to 127.0.0.1 must not reach this process
         host = request.headers.get("host", "").lower()
-        name = host.rsplit(":", 1)[0] if not host.startswith("[") else host.split("]")[0] + "]"
-        if name not in ("127.0.0.1", "localhost", "[::1]") or (port is not None and ":" in host and not host.endswith(f":{port}")):
+        if host.startswith("["):
+            name, _, rest = host.partition("]")
+            name, hp = name + "]", rest[1:] if rest.startswith(":") else ""
+            if rest and not rest.startswith(":"):
+                name = "bad"
+        else:
+            name, _, hp = host.partition(":")
+        if name not in ("127.0.0.1", "localhost", "[::1]") or (hp and port is not None and hp != str(port)):
             return JSONResponse({"error": "bad_host", "reason": "use http://127.0.0.1"}, status_code=400)
         if request.method != "OPTIONS":
             if not hmac.compare_digest(request.headers.get(HEADER, "").encode(), token.encode()):
@@ -70,6 +71,13 @@ def create_web_app(client: Client, token: str, cors_origins: list[str] | None = 
         resp.headers["Cache-Control"] = "no-store"
         resp.headers["X-Content-Type-Options"] = "nosniff"
         return resp
+
+    # added after the guard so it is the outermost layer: even a 401 or a bad-host answer carries the CORS headers,
+    # otherwise the browser reports an opaque network error instead of the reason
+    if cors_origins:
+        from fastapi.middleware.cors import CORSMiddleware
+        app.add_middleware(CORSMiddleware, allow_origins=cors_origins, allow_credentials=False,
+                           allow_methods=["GET", "POST"], allow_headers=["content-type", HEADER])
 
     def run(fn):
         try:
@@ -190,14 +198,14 @@ def main(argv: list[str] | None = None) -> int:
     if not 1 <= a.port <= 65535:
         print("refused: bad port", file=sys.stderr)
         return 2
-    from .cli import _post
+    from .cli import _post as _cli_post
     try:
         dev = Device.load(a.key)
     except (OSError, vault.VaultError, c.CryptoError) as e:
         print(f"refused: cannot load the key file: {e}", file=sys.stderr)
         return 2
     token = secrets.token_urlsafe(32)
-    app = create_web_app(Client(dev, _post(a.url), state_path=str(a.key) + ".state"), token, port=a.port)
+    app = create_web_app(Client(dev, _cli_post(a.url, timeout=10), state_path=str(a.key) + ".state"), token, port=a.port)
     print(f"PRISM local backend for {dev.user}/{dev.device_id} on http://127.0.0.1:{a.port}", file=sys.stderr)
     print(f"session token (send as {HEADER}): {token}", file=sys.stderr)
     import uvicorn

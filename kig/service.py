@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import math
+import re
 import os
 import threading
 import time
@@ -41,6 +42,7 @@ STATE_CHANGING_TYPES = {"user.created", "role.changed", "device.enrolled", "file
                        "file.rotated", "device.revoked", "device.lost", "user.disabled", "service.bootstrapped"}
 MUTATING_TYPES = {"user.created", "role.changed", "device.enrolled", "file.created", "service.bootstrapped"}
 ROLES = ("admin", "member")
+_CMD_RE = re.compile(r"[a-z_]{1,64}")
 ID_CHARS = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_.")
 
 
@@ -493,8 +495,8 @@ class GuardService:
             if (not isinstance(args, dict) or isinstance(ts, bool) or not isinstance(ts, (int, float))
                     or not math.isfinite(ts) or abs(ts) > 1e12):
                 raise KeyError
-            if len(nonce) > 64 or len(dev_id) > 64:
-                raise KeyError
+            if len(nonce) > 64 or len(dev_id) > 64 or not _CMD_RE.fullmatch(cmd):
+                raise KeyError      # a command name is short lowercase words; anything else is never logged or echoed
             body = {k: env[k] for k in ("cmd", "device", "ts", "nonce", "args")}
             if "aud" in env:
                 body["aud"] = env["aud"]
@@ -948,7 +950,7 @@ class GuardService:
             if e["actor"] in mine or about in mine:
                 out.append({"seq": e["seq"], "ts": e["ts"], "type": e["type"], "actor": e["actor"] if e["actor"] in mine or e["actor"] in ("operator", "detector", "service")
                             else "another user",
-                            "data": {k: d[k] for k in keep if k in d}})
+                            "data": {k: (d[k][:200] if isinstance(d[k], str) else d[k]) for k in keep if k in d}})
                 if len(out) >= limit:
                     break
         return {"entries": out}

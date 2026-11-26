@@ -18,12 +18,12 @@ from .client import Client, Device
 from .service import Denied, GuardService
 
 
-def _post(url: str):
+def _post(url: str, timeout: float = 15):
     def send(env):
         req = urllib.request.Request(url.rstrip("/") + "/v1/command", data=json.dumps(env).encode(),
                                      headers={"Content-Type": "application/json"})
         try:
-            with urllib.request.urlopen(req, timeout=15) as r:
+            with urllib.request.urlopen(req, timeout=timeout) as r:
                 return json.load(r)
         except urllib.error.HTTPError as e:
             body = json.load(e)
