@@ -37,6 +37,12 @@ def create_app(data_dir: str | Path, service: GuardService | None = None,
     data_dir = Path(data_dir)
     if trust_proxy is None:
         trust_proxy = os.environ.get("KIG_TRUSTED_PROXY") == "1"
+    hops = 1
+    if trust_proxy:
+        raw_hops = os.environ.get("KIG_PROXY_HOPS", "1").strip() or "1"
+        if not raw_hops.isdigit() or not 1 <= int(raw_hops) <= 16:
+            raise ValueError(f"KIG_PROXY_HOPS must be an integer from 1 to 16, got {raw_hops[:20]!r}")
+        hops = int(raw_hops)
     svc = service or GuardService(data_dir)
     token = _operator_token(data_dir)
     app = FastAPI(title="Key Identity Guard", version="0.1.0", docs_url=None, redoc_url=None)
@@ -76,10 +82,9 @@ def create_app(data_dir: str | Path, service: GuardService | None = None,
             # Only behind reverse proxies you control. Each proxy APPENDS the address it saw, so the
             # client-supplied (spoofable) entries are on the left. Take the entry added by the
             # outermost trusted proxy: hop N counted from the right (KIG_PROXY_HOPS, default 1).
-            hops = [h.strip() for h in request.headers.get("x-forwarded-for", "").split(",") if h.strip()]
-            n = max(1, int(os.environ.get("KIG_PROXY_HOPS", "1") or 1))
-            if len(hops) >= n:
-                src = hops[-n][:64]
+            chain = [h.strip() for h in request.headers.get("x-forwarded-for", "").split(",") if h.strip()]
+            if len(chain) >= hops:
+                src = chain[-hops][:64]
         return svc.handle(env, source=src)
 
     @app.get("/v1/overview", dependencies=[Depends(operator)])
