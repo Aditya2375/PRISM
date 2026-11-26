@@ -97,8 +97,8 @@ class Client:
         wraps = self._wrap_for(dek, file_id, 1, self._recipients(acl))
         return self.call("put_file", file_id=file_id, acl=acl, ciphertext=c.b64e(ct), wraps=wraps)
 
-    def fetch(self, file_id: str, auto_rotate: bool = True) -> bytes:
-        r = self.call("fetch", file_id=file_id)
+    def fetch(self, file_id: str, auto_rotate: bool = True, epoch: int | None = None) -> bytes:
+        r = self.call("fetch", file_id=file_id) if epoch is None else self.call("fetch", file_id=file_id, epoch=epoch)
         epoch = r["epoch"]
         dek = self._unwrap(r["wrap"], file_id, epoch)
         plain = c.aead_decrypt(dek, c.b64d(r["ciphertext"]), _file_aad(file_id, epoch))

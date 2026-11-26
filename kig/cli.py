@@ -39,6 +39,8 @@ def main(argv: list[str] | None = None) -> int:
         p.add_argument("--out", required=True, help="where to write the device key file (mode 0600)")
         if name == "init":
             p.add_argument("--data", required=True)
+    p = sub.add_parser("verify-log", help="verify the signed key-event log offline")
+    p.add_argument("--data", required=True)
     p = sub.add_parser("call")
     p.add_argument("--url", required=True)
     p.add_argument("--key", required=True)
@@ -46,6 +48,13 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("args", nargs="?", default="{}")
     a = ap.parse_args(argv)
 
+    if a.op == "verify-log":
+        from pathlib import Path
+        from .audit import verify_chain
+        entries = [json.loads(l) for l in (Path(a.data) / "audit.jsonl").read_text().splitlines() if l.strip()]
+        ok, why = verify_chain(entries, (Path(a.data) / "server_sign.pub").read_bytes())
+        print(f"{'OK' if ok else 'FAILED'}: {why} ({len(entries)} entries)")
+        return 0 if ok else 1
     if a.op in ("init", "keygen"):
         dev = Device.generate(a.device, a.user)
         dev.save(a.out)

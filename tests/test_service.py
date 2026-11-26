@@ -232,3 +232,19 @@ def test_audit_truncation_detected_on_restart(w, tmp_path):
     p.write_text("\n".join(lines[:-2]) + "\n")  # drop the newest entries (chain still valid)
     with pytest.raises(AuditError):
         GuardService(tmp_path / "data", clock=w.clock)
+
+
+def test_user_text_cannot_forge_a_second_event_or_actor(w):
+    evil = 'x"}\n{"seq":99,"type":"device.enrolled","actor":"alice-laptop","data":{}}\r\n'
+    before = len(w.svc.audit.entries)
+    w.admin.call("revoke_device", device="alice-phone", reason=evil)
+    assert w.svc.audit.verify() == (True, "ok")
+    raw = (w.svc.dir / "audit.jsonl").read_text().splitlines()
+    assert len(raw) == len(w.svc.audit.entries)           # exactly one line per event
+    new = w.svc.audit.entries[before:]
+    assert all(e["actor"] in ("alice-laptop", "detector") for e in new)
+    assert [e["type"] for e in new if e["type"] == "device.revoked"] == ["device.revoked"]
+    # a hostile device id string cannot become the recorded actor of a real device
+    rogue = Client(Device.generate("alice-laptop\nfake", "alice"), w.svc.handle, w.clock)
+    assert code(rogue.fetch, "report") == "unauthorized"
+    assert w.svc.audit.entries[-1]["actor"] == "unknown"

@@ -26,9 +26,14 @@ from .audit import AuditError, AuditLog
 from .detect import Alert, Detector
 
 SKEW_S = 30
+GRACE_S = 60  # rotation cutoff: the previous key version stays readable this long for in-flight transfers
 MAX_FILE_BYTES = 5 * 1024 * 1024
 ROLES = ("admin", "member")
 ID_CHARS = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_.")
+
+
+class SimulatedCrash(BaseException):
+    """Raised by fault-injection hooks in tests and the red-team harness to model a process kill."""
 
 
 class Denied(Exception):
@@ -43,14 +48,21 @@ def _valid_id(x: Any) -> str:
     return x
 
 
-def _atomic_write(path: Path, data: bytes, mode: int = 0o600) -> None:
+def _atomic_write(path: Path, data: bytes, mode: int = 0o600, hook: Callable[[], None] | None = None) -> None:
     tmp = path.with_suffix(path.suffix + ".tmp")
     fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, mode)
     with os.fdopen(fd, "wb") as fh:
         fh.write(data)
         fh.flush()
         os.fsync(fh.fileno())
+    if hook:
+        hook()
     os.replace(tmp, path)
+    dfd = os.open(path.parent, os.O_RDONLY)
+    try:
+        os.fsync(dfd)
+    finally:
+        os.close(dfd)
 
 
 class GuardService:
@@ -59,7 +71,9 @@ class GuardService:
         self.dir.mkdir(parents=True, exist_ok=True)
         self.clock = clock
         self._lock = threading.RLock()
+        self.crash_at: str | None = None  # fault injection: name of a crash point
         self._load_server_key()
+        self.revoked: set[str] = self._load_revoked()
         self.audit = AuditLog(self.dir / "audit.jsonl", self._sec, self.pub)
         self.state: dict[str, Any] = self._load_state()
         self._check_not_truncated()
@@ -72,6 +86,10 @@ class GuardService:
         self.boot = self.clock()
         self._replay_detector()
         self._reconcile()
+        self._enforce_revoked()
+        if self.audit.recovered_torn_bytes:
+            self._log("service.recovered", "service", {"dropped_torn_bytes": self.audit.recovered_torn_bytes})
+            self._persist()
 
     # ------------------------------------------------------------ key + state
 
@@ -83,6 +101,47 @@ class GuardService:
             self.pub, self._sec = c.sig_keygen()
             _atomic_write(sec_p, self._sec)
             _atomic_write(pub_p, self.pub, 0o644)
+
+    def _crash(self, point: str) -> None:
+        if self.crash_at == point:
+            raise SimulatedCrash(point)
+
+    def _load_revoked(self) -> set[str]:
+        """The revoked set lives in its own append-only file, written and fsynced first.
+
+        Even if state.json is lost or rolled back, a revocation that was acknowledged
+        cannot be forgotten, and the set is checked before anything else.
+        """
+        p = self.dir / "revoked.log"
+        out: set[str] = set()
+        if p.exists():
+            for line in p.read_text().splitlines():
+                if line.strip():
+                    out.add(line.strip().split("\t")[0])
+        return out
+
+    def _record_revoked(self, devices: list[str]) -> None:
+        new = [d for d in devices if d not in self.revoked]
+        if not new:
+            return
+        p = self.dir / "revoked.log"
+        fd = os.open(p, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+        with os.fdopen(fd, "a") as fh:
+            for d in new:
+                fh.write(f"{d}\t{self.clock():.3f}\n")
+            fh.flush()
+            os.fsync(fh.fileno())
+        self.revoked.update(new)
+        self._crash("after_revoked_journal")
+
+    def _enforce_revoked(self) -> None:
+        changed = False
+        for d in self.revoked:
+            dev = self.state["devices"].get(d)
+            if dev and (dev["status"] == "active" or any(d in f["wraps"] for f in self.state["files"].values())):
+                changed |= self._apply_remove_device(d, "revoked")
+        if changed:
+            self._persist()
 
     def _load_state(self) -> dict[str, Any]:
         p = self.dir / "state.json"
@@ -100,7 +159,8 @@ class GuardService:
     def _persist(self) -> None:
         self.state["applied"] = len(self.audit.entries)
         self.state["audit_head"] = self.audit.head
-        _atomic_write(self.dir / "state.json", json.dumps(self.state, sort_keys=True).encode())
+        _atomic_write(self.dir / "state.json", json.dumps(self.state, sort_keys=True).encode(),
+                      hook=lambda: self._crash("before_state_rename"))
 
     def _replay_detector(self) -> None:
         """Rebuild detector memory from the audit log after a restart."""
@@ -135,6 +195,7 @@ class GuardService:
 
     def _log(self, etype: str, actor: str, data: dict[str, Any]) -> dict[str, Any]:
         entry = self.audit.append(self.clock(), etype, actor, data)
+        self._crash("after_audit")
         if etype != "alert.raised":
             for a in self.detector.observe(entry):
                 self._raise(a)
@@ -172,6 +233,10 @@ class GuardService:
             dev["removed_at"] = self.clock()
             changed = True
         for f in self.state["files"].values():
+            prev = f.get("prev")
+            if prev and device in prev["wraps"]:
+                del prev["wraps"][device]  # a revoked device gets no grace period at all
+                changed = True
             if device in f["wraps"]:
                 del f["wraps"][device]
                 f["needs_rotation"] = True
@@ -257,9 +322,13 @@ class GuardService:
             self._deny("auth.replay", dev_id, {"device": dev_id, "cmd": cmd}, "replay", "nonce already used")
         self.nonces[nkey] = now
 
-        if dev["status"] != "active":
+        if dev["status"] != "active" or dev_id in self.revoked:
+            if dev["status"] == "active":
+                self._apply_remove_device(dev_id, "revoked")
+                self._persist()
             self._deny("auth.revoked_device_use", dev_id,
-                       {"device": dev_id, "cmd": cmd, "status": dev["status"], "user": dev["user"]},
+                       {"device": dev_id, "cmd": cmd, "status": "revoked" if dev["status"] == "active" else dev["status"],
+                        "user": dev["user"]},
                        "revoked", f"device is {dev['status']}")
         user = self.state["users"].get(dev["user"])
         if not user or not user["active"]:
@@ -364,6 +433,7 @@ class GuardService:
                        "forbidden", "only the owner or an admin may do this")
         if d["status"] != "active":
             return {"ok": True, "already": d["status"]}
+        self._record_revoked([target])
         self._apply_remove_device(target, kind)
         pending = sorted(k for k, f in self.state["files"].items() if f["needs_rotation"])
         self._log(f"device.{'lost' if kind == 'lost' else 'revoked'}", dev,
@@ -385,6 +455,7 @@ class GuardService:
             raise Denied("bad_request", "unknown user", 400)
         if target == user:
             raise Denied("conflict", "cannot disable yourself", 409)
+        self._record_revoked(self._devices_of(target))
         u["active"] = False
         for d in self._devices_of(target):
             self._apply_remove_device(d, "revoked")
@@ -430,7 +501,7 @@ class GuardService:
         wraps = self._check_wraps(args.get("wraps"), acl)
         self.state["files"][fid] = {
             "owner": user, "acl": acl, "epoch": 1, "ciphertext": ct,
-            "wraps": wraps, "needs_rotation": False,
+            "wraps": wraps, "needs_rotation": False, "prev": None,
         }
         self._log("file.created", dev, {"file": fid, "owner": user, "acl": acl, "epoch": 1})
         return {"ok": True, "epoch": 1}
@@ -448,6 +519,11 @@ class GuardService:
     def cmd_fetch(self, dev, user, role, args):
         fid = _valid_id(args.get("file_id"))
         f = self._file_for(dev, user, role, fid, "fetch")
+        want = args.get("epoch")
+        if want is not None and (isinstance(want, bool) or not isinstance(want, int)):
+            raise Denied("bad_request", "epoch must be an integer", 400)
+        if want is not None and want != f["epoch"]:
+            return self._fetch_previous(dev, user, fid, f, want)
         wrap = f["wraps"].get(dev)
         if wrap is None:
             self._deny("access.denied", dev, {"device": dev, "user": user, "file": fid,
@@ -456,6 +532,29 @@ class GuardService:
         self._log("access.granted", dev, {"device": dev, "user": user, "file": fid, "epoch": f["epoch"]})
         return {"file_id": fid, "epoch": f["epoch"], "ciphertext": f["ciphertext"], "wrap": wrap,
                 "acl": f["acl"], "needs_rotation": f["needs_rotation"]}
+
+    def _fetch_previous(self, dev, user, fid, f, want):
+        """Rotation cutoff: the previous version is readable for GRACE_S seconds, then rejected."""
+        prev = f.get("prev")
+        now = self.clock()
+        if not prev or prev["epoch"] != want:
+            self._deny("access.denied", dev, {"device": dev, "user": user, "file": fid, "action": "fetch",
+                                              "why": f"epoch {want} is not current or in grace"},
+                       "expired", "that key version is no longer available")
+        age = now - prev["rotated_at"]
+        if age > GRACE_S:
+            self._deny("access.denied", dev, {"device": dev, "user": user, "file": fid, "action": "fetch",
+                                              "why": f"epoch {want} past cutoff ({age:.0f}s > {GRACE_S}s)"},
+                       "expired", "that key version is past its rotation cutoff")
+        wrap = prev["wraps"].get(dev)
+        if wrap is None:
+            self._deny("access.denied", dev, {"device": dev, "user": user, "file": fid, "action": "fetch",
+                                              "why": "no grace key for this device"},
+                       "forbidden", "no key available for this device")
+        self._log("access.granted_grace", dev, {"device": dev, "user": user, "file": fid, "epoch": want,
+                                                "age_s": round(age, 1)})
+        return {"file_id": fid, "epoch": want, "ciphertext": prev["ciphertext"], "wrap": wrap,
+                "acl": f["acl"], "needs_rotation": True, "grace_remaining_s": round(GRACE_S - age, 1)}
 
     def cmd_rotate(self, dev, user, role, args):
         fid = _valid_id(args.get("file_id"))
@@ -478,6 +577,9 @@ class GuardService:
         ct = self._check_blob(args.get("ciphertext"))
         wraps = self._check_wraps(args.get("wraps"), acl)
         old_acl = f["acl"]
+        # Keep the old version for in-flight readers, only for devices that stay eligible.
+        f["prev"] = {"epoch": f["epoch"], "ciphertext": f["ciphertext"], "rotated_at": self.clock(),
+                     "wraps": {d: w for d, w in f["wraps"].items() if d in wraps}}
         f.update(acl=acl, ciphertext=ct, wraps=wraps, epoch=f["epoch"] + 1, needs_rotation=False)
         self._log("file.rotated", dev, {"file": fid, "epoch": f["epoch"], "by": user,
                                         "acl_changed": acl != old_acl})

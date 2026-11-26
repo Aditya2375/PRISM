@@ -53,6 +53,7 @@ class AuditLog:
         self.pub = service_pub
         self._lock = threading.Lock()
         self.entries: list[dict[str, Any]] = []
+        self.recovered_torn_bytes = 0
         if self.path.exists():
             self.entries = self._load()
             ok, why = verify_chain(self.entries, self.pub)
@@ -63,11 +64,24 @@ class AuditLog:
         import json
 
         out = []
-        with open(self.path, "r", encoding="utf-8") as fh:
-            for line in fh:
-                line = line.strip()
-                if line:
-                    out.append(json.loads(line))
+        good_bytes = 0
+        with open(self.path, "rb") as fh:
+            for raw in fh:
+                try:
+                    if not raw.endswith(b"\n"):
+                        raise ValueError("unterminated line")
+                    out.append(json.loads(raw))
+                except ValueError:
+                    # A torn final write (crash mid-append). Only the very last line may be torn;
+                    # drop it and keep the last complete, verified entry.
+                    rest = fh.read()
+                    if rest.strip():
+                        raise AuditError("audit log corrupt before its final line") from None
+                    self.recovered_torn_bytes = len(raw)
+                    with open(self.path, "r+b") as w:
+                        w.truncate(good_bytes)
+                    return out
+                good_bytes += len(raw)
         return out
 
     @property
