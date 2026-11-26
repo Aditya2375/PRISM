@@ -1,6 +1,6 @@
 # PRISM
 
-Post-quantum Resilient Identity & Security Management. Core design notes: `docs/CORE.md`.
+Post-quantum Resilient Identity & Security Management. Core design notes: `docs/CORE.md`; cryptography and claims: `docs/CRYPTO.md`.
 
 DevForge Yugaantar, Track 4 ("Key Identity Guard").
 
