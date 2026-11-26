@@ -87,6 +87,14 @@ class Cluster:
 
         return handle
 
+    def restart(self, node: str) -> GuardService:
+        """Simulate a replica process restart: state is reloaded from disk and the last-sync time is forgotten,
+        so the node fails closed (when partitioned) until it has pulled from the primary again."""
+        old = self.nodes[node]
+        self.nodes[node] = GuardService(old.dir, clock=self.clock, name=node, read_only=True)
+        self.last_sync.pop(node, None)
+        return self.nodes[node]
+
     def tick(self) -> None:
         """The 1 s background pull for every reachable replica."""
         for name in self.nodes:
