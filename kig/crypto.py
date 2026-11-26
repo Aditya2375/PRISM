@@ -41,6 +41,18 @@ KEY_LEN = 32
 NONCE_LEN = 12
 
 
+# One identifier names every primitive this release uses. It is written into every persistent
+# format (key files, vault files, state, backups) and checked on read, so a file made with a
+# different suite is refused instead of being parsed as if it were ours.
+SUITE = "PRISM-1:HPKE(MLKEM768-X25519,HKDF-SHA256,ChaCha20Poly1305)+AES-256-GCM+ML-DSA-65+scrypt"
+
+
+def require_suite(obj: object, what: str) -> None:
+    got = obj.get("suite") if isinstance(obj, dict) else None
+    if got != SUITE:
+        raise CryptoError(f"{what} was made with an unsupported or missing cipher suite: {str(got)[:80]!r}")
+
+
 class CryptoError(Exception):
     """Raised for any failed decryption, verification or malformed input."""
 

@@ -103,6 +103,7 @@ def create(svc: GuardService, backup_pub: bytes, out_path: str | Path) -> dict[s
         dek = c.random_key()
         doc = {
             "v": 1,
+            "suite": c.SUITE,
             "manifest": manifest,
             "kem_ct": c.b64e(kem_ct),
             "wrapped_dek": c.b64e(c.aead_encrypt(kek, dek, _ctx(manifest))),
@@ -122,8 +123,11 @@ def verify_and_open(path: str | Path, backup_pub: bytes, backup_sec: bytes,
         manifest = doc["manifest"]
         if doc.get("v") != 1:
             raise BackupError("unsupported backup version")
+        c.require_suite(doc, "backup")
     except BackupError:
         raise
+    except c.CryptoError as e:
+        raise BackupError(str(e)) from None
     except Exception:  # noqa: BLE001
         raise BackupError("backup file is damaged or not a backup (unreadable)") from None
     if not c.verify(service_pub, "backup", c.canonical(doc), sig):

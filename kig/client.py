@@ -58,6 +58,7 @@ class Device:
     def save(self, path: str | Path, passphrase: str | None = None) -> None:
         """Write the key file atomically. With a passphrase (or PRISM_PASSPHRASE) it is encrypted."""
         data = {k: (c.b64e(v) if isinstance(v, bytes) else v) for k, v in self.__dict__.items()}
+        data["suite"] = c.SUITE
         raw = json.dumps(data).encode()
         passphrase = passphrase or vault.passphrase_from_env()
         blob = vault.seal(raw, passphrase, "prism/device-key") if passphrase else raw
@@ -70,8 +71,11 @@ class Device:
             blob = vault.open_(blob, passphrase or vault.passphrase_from_env(), "prism/device-key")
         try:
             raw = json.loads(blob)
+            c.require_suite(raw, "device key file")
             return cls(raw["device_id"], raw["user"], *(c.b64d(raw[k]) for k in
                        ("sign_pub", "sign_sec", "kem_pub", "kem_sec")))
+        except c.CryptoError as e:
+            raise vault.VaultError(str(e)) from None
         except Exception:  # noqa: BLE001
             raise vault.VaultError("key file is damaged") from None
 

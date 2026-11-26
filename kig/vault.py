@@ -41,7 +41,7 @@ def seal(secret: bytes, passphrase: str, label: str) -> bytes:
     if not passphrase:
         raise VaultError("empty passphrase")
     salt, nonce = os.urandom(16), os.urandom(12)
-    hdr = {"v": 1, "kdf": "scrypt", "n": _N, "r": _R, "p": _P, "salt": c.b64e(salt), "label": label}
+    hdr = {"v": 1, "suite": c.SUITE, "kdf": "scrypt", "n": _N, "r": _R, "p": _P, "salt": c.b64e(salt), "label": label}
     ct = AESGCM(_kdf(passphrase, salt, _N, _R, _P)).encrypt(nonce, secret, c.canonical(hdr))
     return json.dumps({"hdr": hdr, "nonce": c.b64e(nonce), "ct": c.b64e(ct)}, sort_keys=True).encode()
 
@@ -60,6 +60,7 @@ def open_(blob: bytes, passphrase: str | None, label: str) -> bytes:
     try:
         d = json.loads(blob)
         hdr = d["hdr"]
+        c.require_suite(hdr, "key file")
         if hdr["v"] != 1 or hdr["kdf"] != "scrypt" or hdr["label"] != label:
             raise VaultError("unsupported or mismatched key file")
         n, r, p = hdr["n"], hdr["r"], hdr["p"]
@@ -70,6 +71,8 @@ def open_(blob: bytes, passphrase: str | None, label: str) -> bytes:
         return AESGCM(key).decrypt(c.b64d(d["nonce"]), c.b64d(d["ct"]), c.canonical(hdr))
     except VaultError:
         raise
+    except c.CryptoError as e:
+        raise VaultError(str(e)) from None
     except InvalidTag:
         raise VaultError("wrong passphrase or the key file was modified") from None
     except Exception:  # noqa: BLE001

@@ -213,6 +213,10 @@ class GuardService:
                 raise StateCorrupt("state.json is unreadable or unsigned; restore from a verified backup") from None
             if not c.verify(self.pub, "state", c.canonical(st), sig):
                 raise StateCorrupt("state.json failed its integrity signature; restore from a verified backup")
+            try:
+                c.require_suite(st, "state.json")
+            except c.CryptoError as e:
+                raise StateCorrupt(str(e)) from None
             return st
         blobs = self.dir / "blobs"
         leftovers = [x for x in (self.dir / "revoked.log", self.dir / "audit.jsonl") if x.exists() and x.stat().st_size]
@@ -220,7 +224,7 @@ class GuardService:
             raise StateCorrupt("state.json is missing but this directory holds service data; "
                                "restore from a verified backup instead of starting empty")
         self._fresh = True
-        return {"users": {}, "devices": {}, "files": {}, "applied": 0}
+        return {"suite": c.SUITE, "users": {}, "devices": {}, "files": {}, "applied": 0}
 
     def _check_not_truncated(self) -> None:
         n = int(self.state.get("applied", 0))
