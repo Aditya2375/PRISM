@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createApi, ApiError, toBase64 } from "../src/api.js";
-import { clip, when, shortHash, fingerprintGroups, labelFor } from "../src/format.js";
+import { clip, when, shortHash, fingerprintGroups, labelFor, TOAST_MS } from "../src/format.js";
 
 const ok = (body, status = 200) => async () => new Response(JSON.stringify(body), { status });
 
@@ -102,4 +102,8 @@ test("polling does not keep a session alive, touch does, and a timer signs out",
   let fired = 0; const stop = api2.watch(() => fired++, 5);
   t = 2500; await new Promise((r) => setTimeout(r, 40)); stop();
   assert.equal(fired, 1); assert.equal(api2.signedIn, false);
+});
+
+test("confirmation messages go away on their own, after a readable time", () => {
+  assert.ok(TOAST_MS >= 3000 && TOAST_MS <= 8000);
 });

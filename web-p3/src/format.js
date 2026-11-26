@@ -33,3 +33,6 @@ export const labelFor = (t) => LABELS[t] ?? clip(t, 64);
 export function fingerprintGroups(fp) {
   return typeof fp === "string" && /^[0-9a-f]{8}(-[0-9a-f]{8}){7}$/.test(fp) ? fp.split("-") : [];
 }
+
+// How long a confirmation message stays on screen before it goes away.
+export const TOAST_MS = 5000;
