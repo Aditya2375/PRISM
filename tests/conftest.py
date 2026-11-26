@@ -46,3 +46,10 @@ def code(fn, *a, **k):
     except Denied as e:
         return e.code
     return None
+
+
+@pytest.fixture(autouse=True)
+def _no_ambient_passphrase(monkeypatch):
+    """A passphrase left in the developer's environment must not change what the tests do."""
+    for name in ("PRISM_PASSPHRASE", "KIG_DATA", "KIG_TRUSTED_PROXY", "KIG_PROXY_HOPS"):
+        monkeypatch.delenv(name, raising=False)
