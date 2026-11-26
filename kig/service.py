@@ -614,7 +614,7 @@ class GuardService:
                 f["needs_rotation"] = True   # the new device holds no wrap until the owner or an admin re-keys
         self._log("device.enrolled", dev, {"user": target, "device": new_dev, "by": user,
                                               "fingerprint": fp, "verified": expect is not None})
-        return {"ok": True, "fingerprint": fp}
+        return {"ok": True, "fingerprint": fp, "verified": expect is not None}
 
     def _remove(self, dev, user, role, args, kind):
         target = _valid_id(args.get("device"))
@@ -733,6 +733,25 @@ class GuardService:
                 raise Denied("bad_request", f"unknown or disabled user {u}", 400)
         return acl
 
+    def _check_manifest(self, dev: str, fid: str, epoch: int, acl: list[str], owner: str, commit: str,
+                        sig_b64: Any) -> dict[str, Any]:
+        """A new file version must carry its writer's signature over what the service is about to commit."""
+        from .client import manifest_msg
+        try:
+            sig = c.b64d(sig_b64)
+            pub = c.b64d(self.state["devices"][dev]["sign_pub"])
+        except (c.CryptoError, KeyError, TypeError, ValueError):
+            raise Denied("bad_request", "manifest_sig missing or malformed", 400) from None
+        if not c.verify(pub, "manifest", manifest_msg(fid, epoch, acl, owner, commit, dev), sig):
+            raise Denied("bad_request", "manifest signature does not match this version, acl and owner", 400)
+        return {"writer": dev, "sig": c.b64e(sig)}
+
+    def _manifest_out(self, m: dict[str, Any] | None) -> dict[str, Any] | None:
+        if not m:
+            return None
+        dev = self.state["devices"].get(m["writer"])
+        return {"writer": m["writer"], "sig": m["sig"], "writer_sign_pub": dev["sign_pub"] if dev else ""}
+
     def cmd_put_file(self, dev, user, role, args):
         fid = _valid_id(args.get("file_id"))
         if fid in self.state["files"]:
@@ -745,8 +764,9 @@ class GuardService:
         commit = self._check_commit(args.get("commit"))
         ct = self._store_blob(self._check_blob(args.get("ciphertext")))
         wraps = self._check_wraps(args.get("wraps"), acl)
+        manifest = self._check_manifest(dev, fid, 1, acl, user, commit, args.get("manifest_sig"))
         self.state["files"][fid] = {
-            "owner": user, "acl": acl, "epoch": 1, "ct": ct, "commit": commit,
+            "owner": user, "acl": acl, "epoch": 1, "ct": ct, "commit": commit, "manifest": manifest,
             "wraps": wraps, "needs_rotation": False, "prev": None,
         }
         self._log("file.created", dev, {"file": fid, "owner": user, "acl": acl, "epoch": 1})
@@ -782,7 +802,8 @@ class GuardService:
                        "forbidden", "no key available for this device")
         self._log("access.granted", dev, {"device": dev, "user": user, "file": fid, "epoch": f["epoch"]})
         return {"file_id": fid, "epoch": f["epoch"], "ciphertext": self._load_blob(f["ct"]), "wrap": wrap, "commit": f["commit"],
-                "can_rotate": self._may_rotate(user, role, f),
+                "can_rotate": self._may_rotate(user, role, f), "owner": f["owner"],
+                "manifest": self._manifest_out(f.get("manifest")),
                 "acl": f["acl"], "needs_rotation": f["needs_rotation"]}
 
     @staticmethod
@@ -810,8 +831,9 @@ class GuardService:
         self._log("access.granted_grace", dev, {"device": dev, "user": user, "file": fid, "epoch": want,
                                                 "age_s": round(age, 1)})
         return {"file_id": fid, "epoch": want, "ciphertext": self._load_blob(prev["ct"]), "wrap": wrap, "commit": prev["commit"],
-                "can_rotate": self._may_rotate(user, role, f),
-                "acl": f["acl"], "needs_rotation": True, "grace_remaining_s": round(GRACE_S - age, 1)}
+                "can_rotate": self._may_rotate(user, role, f), "owner": f["owner"],
+                "manifest": self._manifest_out(prev.get("manifest")),
+                "acl": prev.get("acl", f["acl"]), "needs_rotation": True, "grace_remaining_s": round(GRACE_S - age, 1)}
 
     def cmd_rotate(self, dev, user, role, args):
         fid = _valid_id(args.get("file_id"))
@@ -840,6 +862,7 @@ class GuardService:
         commit = self._check_commit(args.get("commit"))
         ct_raw = self._check_blob(args.get("ciphertext"))
         wraps = self._check_wraps(args.get("wraps"), acl)
+        manifest = self._check_manifest(dev, fid, f["epoch"] + 1, acl, f["owner"], commit, args.get("manifest_sig"))
         old_acl = f["acl"]
         ct = self._store_blob(ct_raw)             # durable before the state commit references it
         dropped = f["prev"]["ct"] if f.get("prev") else None
@@ -849,8 +872,9 @@ class GuardService:
         self._crash("rotate_after_prepare")
         # Keep the old version for in-flight readers, only for devices that stay eligible.
         f["prev"] = {"epoch": f["epoch"], "ct": f["ct"], "commit": f["commit"], "rotated_at": self.clock(),
+                     "acl": f["acl"], "manifest": f.get("manifest"),
                      "wraps": {d: w for d, w in f["wraps"].items() if d in wraps}}
-        f.update(acl=acl, ct=ct, commit=commit, wraps=wraps, epoch=f["epoch"] + 1, needs_rotation=False)
+        f.update(acl=acl, ct=ct, commit=commit, manifest=manifest, wraps=wraps, epoch=f["epoch"] + 1, needs_rotation=False)
         self._persist()
         self._crash("rotate_mid_commit")
         self._log("file.rotated", dev, {"file": fid, "epoch": f["epoch"], "by": user,

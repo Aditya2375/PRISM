@@ -182,3 +182,21 @@ public keys to stdout and the fingerprint to stderr. The new device's owner read
 a channel the server does not control. The admin runs
 `python -m kig.cli enroll --url URL --key admin.json --pub pub.json --expect-fingerprint FP`. Case, dashes and
 spaces in FP do not matter. `--unverified` is the only way to skip the comparison, and the audit entry then says so.
+
+`doctor` needs the passphrase env var if the server key is sealed. Run against a live server it can show a transient
+FAIL if it copies a file mid-write; run it again before believing a FAIL.
+
+## Signed manifest per file version
+
+Every write (`put_file`, `rotate`) carries `manifest_sig`: an ML-DSA-65 signature, by the writing device, over
+`{file, epoch, acl, owner, commit, writer}` (domain-separated purpose `manifest`). The service refuses a write whose
+signature does not match what it is about to commit, and stores it with the version (the previous version keeps its
+own for the grace window). `fetch` returns the signature, the writer id and the writer's public key. The client
+checks it before it unwraps anything. It also pins, on first sight, each writer's signing key and each file's owner
+(kept in a `.pins` file next to its state file), and refuses a later change.
+
+What this stops: someone with the service's signing key or write access to its disk, but no device key, cannot add a
+user to a file's ACL, change its owner or key commitment, or present an older version's signature on a newer one.
+What it does not stop: the service is still trusted for the device directory at first contact (a writer key it
+supplies is pinned as-is; the enrolment fingerprint is the check for that), for which devices receive wraps, and to
+serve data at all. Files written before this change have no manifest and are refused by clients.

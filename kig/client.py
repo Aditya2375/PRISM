@@ -36,6 +36,12 @@ def _wrap_ctx(file_id: str, device_id: str, epoch: int) -> bytes:
     return f"kig/v1/wrap|{file_id}|{device_id}|{epoch}".encode()
 
 
+def manifest_msg(file_id: str, epoch: int, acl: list[str], owner: str, commit: str, writer: str) -> bytes:
+    """What a writing device signs for each file version: id, version, ACL, owner, key commitment and itself."""
+    return c.canonical({"file": file_id, "epoch": epoch, "acl": sorted(acl), "owner": owner,
+                        "commit": commit, "writer": writer})
+
+
 def device_fingerprint(device: str, user: str, sign_pub: bytes, kem_pub: bytes) -> str:
     """SHA-256 over the device id, user and both public keys, as 8 groups of 8 hex digits.
 
@@ -104,11 +110,49 @@ class Client:
         self.state_path = Path(state_path) if state_path else None
         self.seen_epoch: dict[str, int] = {}   # newest key version this client has seen per file
         self.rotation_errors: list[str] = []   # auto-rotation failures other than a lost race
+        self.pins: dict[str, Any] = {"signers": {}, "owners": {}}   # first-seen signer keys and file owners
+        if self.state_path and Path(str(self.state_path) + ".pins").exists():
+            try:
+                self.pins = json.loads(Path(str(self.state_path) + ".pins").read_text())
+                self.pins["signers"], self.pins["owners"]
+            except (ValueError, OSError, TypeError, KeyError):
+                raise c.CryptoError("client pin file is damaged; refusing to start without it") from None
         if self.state_path and self.state_path.exists():
             try:
                 self.seen_epoch = {k: int(v) for k, v in json.loads(self.state_path.read_text()).items()}
             except (ValueError, OSError, TypeError):
                 raise c.CryptoError("client state file is damaged; refusing to start without its rollback record") from None
+
+    def _save_pins(self) -> None:
+        if self.state_path:
+            vault.write_atomic(Path(str(self.state_path) + ".pins"), json.dumps(self.pins, sort_keys=True).encode())
+
+    def _verify_manifest(self, file_id: str, r: dict[str, Any]) -> None:
+        """Check the writer's signature over this version's id, epoch, ACL, owner and key commitment.
+
+        The signer's key and the file's owner are pinned the first time they are seen (trust on first use, with
+        the enrolment fingerprint as the out-of-band check for the key). After that the service cannot change
+        the ACL, the owner or the key commitment of a version without a device's signature.
+        """
+        m = r.get("manifest")
+        if not isinstance(m, dict) or not all(isinstance(m.get(k), str) for k in ("writer", "writer_sign_pub", "sig")):
+            raise c.CryptoError("no signed manifest for this version")
+        owner = r.get("owner")
+        if not isinstance(owner, str) or not isinstance(r.get("acl"), list):
+            raise c.CryptoError("response lacks owner or acl")
+        pinned = self.pins["signers"].get(m["writer"])
+        if pinned is not None and pinned != m["writer_sign_pub"]:
+            raise c.CryptoError(f"signing key of device {m['writer']} differs from the one pinned earlier")
+        pinned_owner = self.pins["owners"].get(file_id)
+        if pinned_owner is not None and pinned_owner != owner:
+            raise c.CryptoError("file owner differs from the one pinned earlier")
+        msg = manifest_msg(file_id, r["epoch"], r["acl"], owner, r.get("commit", ""), m["writer"])
+        if not c.verify(c.b64d(m["writer_sign_pub"]), "manifest", msg, c.b64d(m["sig"])):
+            raise c.CryptoError("manifest signature invalid: acl, owner or version were changed")
+        if pinned is None or pinned_owner is None:
+            self.pins["signers"][m["writer"]] = m["writer_sign_pub"]
+            self.pins["owners"][file_id] = owner
+            self._save_pins()
 
     def _note_epoch(self, file_id: str, epoch: int) -> None:
         if epoch > self.seen_epoch.get(file_id, 0):
@@ -151,11 +195,15 @@ class Client:
         ct = c.aead_encrypt(dek, plaintext, _file_aad(file_id, 1))
         wraps = self._wrap_for(dek, file_id, 1, self._recipients(acl))
         self._note_epoch(file_id, 1)
+        commit = _commit(dek, file_id, 1)
+        sig = c.sign(self.dev.sign_sec, "manifest",
+                     manifest_msg(file_id, 1, acl, self.dev.user, commit, self.dev.device_id))
         return self.call("put_file", file_id=file_id, acl=acl, ciphertext=c.b64e(ct), wraps=wraps,
-                         commit=_commit(dek, file_id, 1))
+                         commit=commit, manifest_sig=c.b64e(sig))
 
     def _open(self, file_id: str, r: dict[str, Any]) -> bytes:
         epoch = r["epoch"]
+        self._verify_manifest(file_id, r)
         dek = self._unwrap(r["wrap"], file_id, epoch)
         if not isinstance(r.get("commit"), str) or not _hmac.compare_digest(r["commit"], _commit(dek, file_id, epoch)):
             raise c.CryptoError("key commitment mismatch: ciphertext is not bound to this key")
@@ -178,7 +226,7 @@ class Client:
             self._note_epoch(file_id, got)
         if r["needs_rotation"] and auto_rotate and epoch is None and r.get("can_rotate"):
             try:
-                self._rotate_from(file_id, got, plain, r["acl"])
+                self._rotate_from(file_id, got, plain, r["acl"], owner=r["owner"])
             except Exception as exc:  # noqa: BLE001
                 if getattr(exc, "code", "") != "conflict":     # a lost race is fine; anything else is surfaced
                     self.rotation_errors.append(f"{file_id}: {getattr(exc, 'code', type(exc).__name__)}: {exc}")
@@ -189,16 +237,20 @@ class Client:
         if r["epoch"] < self.seen_epoch.get(file_id, 0):
             raise c.CryptoError(f"rollback detected: server offered version {r['epoch']}, already saw {self.seen_epoch[file_id]}")
         plain = self._open(file_id, r)
-        return self._rotate_from(file_id, r["epoch"], plain, acl or r["acl"], change_acl=acl is not None)
+        return self._rotate_from(file_id, r["epoch"], plain, acl or r["acl"], change_acl=acl is not None,
+                                 owner=r["owner"])
 
     def _rotate_from(self, file_id: str, epoch: int, plain: bytes, acl: list[str],
-                     change_acl: bool = False) -> dict[str, Any]:
+                     change_acl: bool = False, owner: str = "") -> dict[str, Any]:
         new_epoch = epoch + 1
         dek = c.random_key()
         ct = c.aead_encrypt(dek, plain, _file_aad(file_id, new_epoch))
         wraps = self._wrap_for(dek, file_id, new_epoch, self._recipients(acl))
-        args: dict[str, Any] = {"file_id": file_id, "expected_epoch": epoch, "commit": _commit(dek, file_id, new_epoch),
-                                "ciphertext": c.b64e(ct), "wraps": wraps}
+        commit = _commit(dek, file_id, new_epoch)
+        sig = c.sign(self.dev.sign_sec, "manifest",
+                     manifest_msg(file_id, new_epoch, acl, owner, commit, self.dev.device_id))
+        args: dict[str, Any] = {"file_id": file_id, "expected_epoch": epoch, "commit": commit,
+                                "ciphertext": c.b64e(ct), "wraps": wraps, "manifest_sig": c.b64e(sig)}
         if change_acl:
             args["acl"] = acl
         res = self.call("rotate", **args)

@@ -37,3 +37,9 @@ def test_enroll_unverified_is_marked(w, tmp_path, monkeypatch, capsys):
     new, pub, adm = _setup(w, tmp_path, monkeypatch)
     assert cli.main(["enroll", "--url", "x", "--key", str(adm), "--pub", str(pub), "--unverified"]) == 0
     assert "UNVERIFIED" in capsys.readouterr().out
+
+
+def test_empty_fingerprint_refused(w, tmp_path, monkeypatch):
+    new, pub, adm = _setup(w, tmp_path, monkeypatch)
+    assert cli.main(["enroll", "--url", "x", "--key", str(adm), "--pub", str(pub), "--expect-fingerprint", ""]) == 2
+    assert "a-77" not in w.svc.state["devices"]

@@ -96,16 +96,25 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     cl = Client(Device.load(a.key), _post(a.url))
     if a.op == "enroll":
-        args = json.loads(Path(a.pub).read_text())
-        if a.expect_fingerprint:
+        raw = json.loads(Path(a.pub).read_text())
+        allowed = {"device", "user", "sign_pub", "kem_pub"}
+        if not isinstance(raw, dict) or set(raw) != allowed or not all(isinstance(raw[k], str) for k in allowed):
+            print(f"refused: the pub file must hold exactly {sorted(allowed)} as strings", file=sys.stderr)
+            return 2
+        args = dict(raw)
+        if a.expect_fingerprint is not None:
+            if not a.expect_fingerprint.strip():
+                print("refused: --expect-fingerprint is empty", file=sys.stderr)
+                return 2
             args["expect_fingerprint"] = a.expect_fingerprint
+        print(f"enrolling device {args['device']} for user {args['user']}", file=sys.stderr)
         try:
             r = cl.call("enroll_device", **args)
         except Denied as e:
             print(f"denied: {e.code}: {e.reason}", file=sys.stderr)
             return 2
         print(f"enrolled {args['device']} for {args['user']}; fingerprint {r.get('fingerprint')}"
-              + ("" if a.expect_fingerprint else " (UNVERIFIED)"))
+              + ("" if r.get("verified") else " (UNVERIFIED)"))
         return 0
     if a.op == "rotate-pending":
         try:
