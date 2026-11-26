@@ -148,11 +148,11 @@ def page1(video: str) -> list:
     f.append(P("Detection, measured (<i>python -m kig.bench_detect</i>)", h2))
     f.append(P("Five explainable rules, no ML. Replaying 1,265 benign requests raised <b>0 false alerts (0.0 per 1,000)</b>. Nine labelled attack "
                "scenarios x 20 runs: <b>precision 1.00, recall 0.67, F1 0.80</b>. For the six scenarios the rules are built for, median time to "
-               "alert is 5 to 15 ms wall and 0 to 2 s on the service clock (a flood summary waits one minute by design). Three scenarios are "
+               "alert is 5 to 70 ms wall and 0 to 2 s on the service clock (a flood summary waits one minute by design). Three scenarios are "
                "missed on purpose and counted: slow guessing under the burst threshold, probing with valid credentials, a valid admin reading "
                "many files. The scenarios and rules have the same authors, so this describes these traces, not real traffic. "
                "Wall times are from one Linux x86_64 machine and are not portable.", small))
-    f.append(P("Cost (<i>python -m kig.bench</i>, same machine): put 12 to 14 ms, fetch about 5 ms, rotate 20 to 25 ms, "
+    f.append(P("Cost (<i>python -m kig.bench</i>, one run on a loaded machine; docs/CORE.md has the table): put 12 to 14 ms, fetch about 5 ms, rotate 20 to 25 ms, "
                "backup of 2,000 files 2.4 s with about 143 MB peak, restore 4.0 s.", small))
     return f
 

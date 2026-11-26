@@ -140,7 +140,7 @@ flips are all rejected (`tests/test_backup.py`).
 
 ## Measured cost (`python -m kig.bench`)
 
-One run on a development machine (Python 3.10, in-process service, 2 KB files, medians, times in ms; stores above 800 files are spread over several owners because one owner is limited to 1,000 files):
+One run on a loaded development machine (Python 3.10, in-process service, 2 KB files, medians, times in ms; stores above 800 files are spread over several owners because one owner is limited to 1,000 files):
 
 | files | put | fetch | rotate | backup | restore | backup peak RAM | restore peak RAM | start-up replay |
 |---|---|---|---|---|---|---|---|---|

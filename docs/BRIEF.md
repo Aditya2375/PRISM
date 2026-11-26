@@ -34,7 +34,7 @@ someone who does not trust the service.**
 * **Explainable detection.** Five rules (revoked-device use, replay, auth-failure burst, privilege escalation, removal of an admin's limited device). No ML. Alerts name the device, user, node, triggering event and source (`unknown` when not logged).
   Measured with `python -m kig.bench_detect` on one machine: 0 false alerts in 1,265 benign requests (0.0 per
   1,000); nine labelled attack scenarios x 20 runs, precision 1.00, recall 0.67, F1 0.80, median time to alert 5 to
-  15 ms wall (0 to 2 s on the service clock) for the rules that fire. Three scenarios (slow guessing, probing,
+  70 ms wall (0 to 2 s on the service clock) for the rules that fire. Three scenarios (slow guessing, probing,
   a valid insider) are missed on purpose and counted. Rules and scenarios have the same authors.
 
 ## How to see it in 90 seconds
