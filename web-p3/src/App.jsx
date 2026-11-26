@@ -8,8 +8,10 @@ import UserDash from "./UserDash";
 import { operatorApi, userApi } from "./api";
 
 // Addresses are fixed at build time: the operator service and the local user backend.
-const SERVICE_URL = import.meta.env.VITE_PRISM_SERVICE ?? "http://127.0.0.1:8443";
-const LOCAL_URL = import.meta.env.VITE_PRISM_LOCAL ?? "http://127.0.0.1:8788";
+// A hosted demo serves the console and both backends from one address (see hosted/), so it asks the page's own origin.
+const SAME = import.meta.env.VITE_PRISM_SAME_ORIGIN === "1";
+const SERVICE_URL = SAME ? window.location.origin : (import.meta.env.VITE_PRISM_SERVICE ?? "http://127.0.0.1:8443");
+const LOCAL_URL = SAME ? window.location.origin : (import.meta.env.VITE_PRISM_LOCAL ?? "http://127.0.0.1:8788");
 const adminApi = operatorApi(SERVICE_URL);
 const localApi = userApi(LOCAL_URL);
 

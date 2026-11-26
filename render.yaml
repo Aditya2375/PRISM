@@ -1,0 +1,12 @@
+# Free review copy of the web console with demo data. See hosted/README.md.
+services:
+  - type: web
+    name: prism-demo
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: python -m hosted.run
+    healthCheckPath: /healthz
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.8
