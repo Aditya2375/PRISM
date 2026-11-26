@@ -30,7 +30,7 @@ from .store import StateStore, StoreCorrupt
 SKEW_S = 30
 GRACE_S = 30  # rotation cutoff: the previous key version stays readable this long for in-flight transfers
 MAX_FILE_BYTES = 5 * 1024 * 1024
-READ_ONLY_CMDS = {"fetch", "whoami", "eligible", "list_files"}
+READ_ONLY_CMDS = {"fetch", "whoami", "eligible", "list_files", "my_devices", "my_activity"}
 MAX_FILES = 10_000                 # per service, bounds state size and write cost
 DEVICE_RATE_PER_MIN = 240          # authenticated requests per device per minute
 SOURCE_FAIL_PER_MIN = 1200         # failed (unauthenticated) requests per source address per minute
@@ -927,6 +927,31 @@ class GuardService:
             self._blob_path(dropped).unlink(missing_ok=True)
         self._crash("rotate_after_commit")
         return {"ok": True, "epoch": f["epoch"]}
+
+    def cmd_my_devices(self, dev, user, role, args):
+        """The caller's own devices only: id, status, enrolment time. No keys, no other user's devices."""
+        return {"devices": [{"device": d, "status": v["status"], "enrolled_at": v.get("enrolled_at"), "this": d == dev}
+                            for d, v in sorted(self.state["devices"].items()) if v["user"] == user]}
+
+    def cmd_my_activity(self, dev, user, role, args):
+        """Newest-first audit entries that concern the caller's own devices (they acted, or the entry is about them).
+        Only a fixed set of plain fields is returned, never fingerprints, proofs or other users' details."""
+        limit = args.get("limit", 20)
+        if type(limit) is not int or not 1 <= limit <= 100:
+            raise Denied("bad_request", "limit must be an integer from 1 to 100", 400)
+        mine = {d for d, v in self.state["devices"].items() if v["user"] == user}
+        keep = ("device", "file", "epoch", "reason", "cmd", "status", "rule", "severity", "explanation")
+        out = []
+        for e in reversed(self.audit.entries):
+            d = e["data"] if isinstance(e["data"], dict) else {}
+            about = d.get("device") or d.get("subject")
+            if e["actor"] in mine or about in mine:
+                out.append({"seq": e["seq"], "ts": e["ts"], "type": e["type"], "actor": e["actor"] if e["actor"] in mine or e["actor"] in ("operator", "detector", "service")
+                            else "another user",
+                            "data": {k: d[k] for k in keep if k in d}})
+                if len(out) >= limit:
+                    break
+        return {"entries": out}
 
     def cmd_list_files(self, dev, user, role, args):
         return {"files": [

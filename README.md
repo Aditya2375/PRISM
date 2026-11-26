@@ -116,11 +116,15 @@ First start creates `data/server_sign.key`, `data/operator.token` (both mode 060
 | `GET /v1/server-key` | none | service ML-DSA public key, for offline audit verification |
 | `GET /healthz` | none | liveness |
 
-Commands for `POST /v1/command` (`cmd` field): `whoami`, `eligible`, `create_user`, `set_role`, `enroll_device`, `revoke_device`, `report_lost`, `disable_user`, `put_file`, `fetch`, `rotate`, `list_files`. Build envelopes with `kig.client.Client` (`Client.envelope`).
+Commands for `POST /v1/command` (`cmd` field): `whoami`, `eligible`, `my_devices`, `my_activity`, `create_user`, `set_role`, `enroll_device`, `revoke_device`, `report_lost`, `disable_user`, `put_file`, `fetch`, `rotate`, `list_files`. Build envelopes with `kig.client.Client` (`Client.envelope`).
 
 Browser front end on another origin: CORS is off by default. Set `KIG_CORS_ORIGINS=http://localhost:5173` (exact origins, comma separated, no path or trailing slash; `*` is refused, and so is a set variable that lists nothing) to let that page call the API. CORS is a browser-side rule only. It does not authenticate anyone and does not replace the operator token. It only lets the browser read answers: operator routes still need `X-KIG-Operator-Token`, and device commands still need a device signature, which a browser cannot make. `python -m kig.demo --json` prints the three-node scene (per-node revocation times, the cut-off replica) as JSON for a status screen; it is simulated, in one process.
 
 Operator CLI: `python -m kig.cli rotate-pending --url URL --key device.json` re-keys every file flagged `needs_rotation` that this device may rotate (owner or admin in the ACL). Behind a reverse proxy (the service port must be reachable only through it) set `KIG_TRUSTED_PROXY=1` and `KIG_PROXY_HOPS` (default 1) so the source address is the one your proxy appended.
+
+### Local backend for a browser user screen (optional)
+
+A browser cannot make ML-DSA signatures, so a page for an ordinary device holder needs a small process on that person's machine that holds the device key: `python -m kig.webapi --key asha-laptop.json --url http://127.0.0.1:8443 [--port 8788]` (passphrase from `PRISM_PASSPHRASE` if the key file is sealed). It binds to 127.0.0.1 only, accepts only `Host: 127.0.0.1`, `localhost` or `[::1]`, and needs the random session token it prints at start-up in an `X-PRISM-Session` header. Endpoints, all JSON except the download: `GET /me`, `GET /files`, `POST /files` (`file_id`, `acl`, `content_b64`), `GET /files/<id>` (raw bytes after the client has checked the signed manifest and pins), `GET /devices` (own devices only), `POST /devices/lost` (`device`, `reason`), `POST /devices/preview` and `POST /devices/enroll` (`pub`, and `expect_fingerprint` or `unverified: true`; the service allows enrolment to admins only), `GET /activity?limit=` (audit entries about your own devices, with a fixed set of plain fields). It never returns keys, wrapped keys, the passphrase or the operator token. CORS is off unless `KIG_CORS_ORIGINS` lists exact origins, and it is not authentication. Limits: the unlocked device key lives in that process, so anything on the same machine that has the session token can act as the device; there is no TLS because it never leaves the loopback interface.
 
 ## Detection rules
 
@@ -150,6 +154,7 @@ kig/detect.py    explainable rules
 kig/service.py   identity directory, access decisions, revocation, recovery
 kig/client.py    device-side crypto and request signing
 kig/api.py       FastAPI app
+kig/webapi.py    optional local backend for a browser user screen
 kig/server.py    app factory used by uvicorn (`kig.server:app`)
 tests/           pytest suite
 ```
