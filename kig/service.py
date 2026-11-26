@@ -37,6 +37,8 @@ SOURCE_FAIL_PER_MIN = 1200         # failed (unauthenticated) requests per sourc
 UNAUTH_LOG_PER_SOURCE_MIN = 3      # signed audit lines for unauthenticated failures, per source per minute
 UNAUTH_LOG_TOTAL_MIN = 30          # ... and in total per minute; the rest are counted and summarised
 POST_AUTH_EXTRA_LOG_MIN = 300      # after a valid signature: the first line per device+class is always logged, extras share this
+STATE_CHANGING_TYPES = {"user.created", "role.changed", "device.enrolled", "file.created", "file.rotate_prepared",
+                       "file.rotated", "device.revoked", "device.lost", "user.disabled", "service.bootstrapped"}
 MUTATING_TYPES = {"user.created", "role.changed", "device.enrolled", "file.created", "service.bootstrapped"}
 ROLES = ("admin", "member")
 ID_CHARS = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_.")
@@ -96,6 +98,7 @@ class GuardService:
         self.store = StateStore(self.dir, self._sec, self.pub, self._crash)
         self.state: dict[str, Any] = self._load_state()
         self._check_not_truncated()
+        self._check_journal_not_behind_audit()
         self.detector = Detector()
         self.locks: dict[str, float] = {}  # kept for alert bookkeeping; authentication is never blocked by it
         rep_state = self.state.get("_replica", {})
@@ -226,6 +229,23 @@ class GuardService:
             raise AuditError(f"audit log truncated: state has seen {n} entries, log has {len(self.audit.entries)}")
         if n and self.audit.entries[n - 1]["hash"] != self.state.get("audit_head"):
             raise AuditError("audit log does not match the head recorded in state")
+
+    def _check_journal_not_behind_audit(self) -> None:
+        """The audit log is the witness for the state journal.
+
+        State is saved before a command is acknowledged, so after a crash the audit log can be ahead of
+        state by at most the one command that was in flight (at most two state-changing entries, a
+        rotation's prepare and commit). More than that means state.wal or state.json lost acknowledged
+        commits (deleted, truncated or replaced by an older copy) and starting would silently roll back
+        ACLs and devices, so refuse. Revocations are not at risk either way: revoked.log is separate.
+        """
+        if self._fresh:
+            return
+        tail = self.audit.entries[int(self.state.get("applied", 0)):]
+        n = sum(1 for e in tail if e["type"] in STATE_CHANGING_TYPES)
+        if n > 2:
+            raise StateCorrupt(f"state is behind the audit log by {n} state-changing entries; the journal or snapshot "
+                               "lost acknowledged commits. Restore from a verified backup")
 
     def _persist(self) -> None:
         if self.read_only:

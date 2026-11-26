@@ -269,7 +269,6 @@ class StateStore:
         self._sec, self._pub, self._crash = sec, pub, crash
         self.snap_path, self.wal_path = self.dir / "state.json", self.dir / "state.wal"
         self.dirty: dict[str, set[str]] = {}
-        self._meta_dirty = True
         self._reset(None)
 
     def _reset(self, snap_id: str | None) -> None:
@@ -282,7 +281,7 @@ class StateStore:
         self.dirty = {}
 
     def meta_touched(self) -> None:
-        self._meta_dirty = True
+        pass   # the small top-level values are written with every journal line
 
     def exists(self) -> bool:
         return self.snap_path.exists()
@@ -327,31 +326,33 @@ class StateStore:
                 os.fsync(fh.fileno())
         self.wal_bytes = good_bytes
         root = self.wrap(st)
-        self._meta_dirty = False
         return root
 
     def _replay(self, st: dict[str, Any]) -> int:
+        """Apply journal lines to ``st``; return how many bytes of the file are good.
+
+        A line counts only if it ends in a newline: the newline is the last byte written, and the
+        write is acknowledged only after fsync, so an unterminated tail was never acknowledged
+        (even if it happens to parse and verify) and is dropped.
+        """
         if not self.wal_path.exists():
             return 0
         raw = self.wal_path.read_bytes()
         pos = 0
-        lines = raw.split(b"\n")
-        for i, line in enumerate(lines):
-            last = i == len(lines) - 1
+        for line in raw.split(b"\n")[:-1]:
+            line_len = len(line) + 1
             if not line:
-                continue
+                raise StoreCorrupt("state.wal has an empty line; restore from a verified backup")
             try:
                 doc = json.loads(line)
                 entry, sig = doc["e"], c.b64d(doc["sig"])
                 ok = c.verify(self._pub, "statewal", c.canonical(entry), sig)
             except Exception:  # noqa: BLE001
-                if last or (i == len(lines) - 2 and not lines[-1]):
-                    break           # torn or garbled final line: never acknowledged
                 raise StoreCorrupt("state.wal is damaged before its end; restore from a verified backup") from None
             if not ok:
                 raise StoreCorrupt("state.wal entry failed its signature; restore from a verified backup")
             if entry["base"] != self.snap_id:
-                pos += len(line) + 1
+                pos += line_len
                 continue            # left over from before the last snapshot; already included in it
             if entry["seq"] != self.seq + 1 or entry["prev"] != self.head:
                 raise StoreCorrupt("state.wal is out of order or has a missing entry")
@@ -366,7 +367,7 @@ class StateStore:
                         tgt[k] = rec
             self.seq, self.head = entry["seq"], c.sha256_hex(c.canonical(entry))
             self.wal_entries += 1
-            pos += len(line) + 1
+            pos += line_len
         return pos
 
     # ---------------------------------------------------------------------------- commit
@@ -393,7 +394,6 @@ class StateStore:
         self.wal_entries += 1
         self.wal_bytes += len(line)
         self.dirty = {}
-        self._meta_dirty = False
 
     def _write_snapshot(self, state: dict[str, Any]) -> None:
         snap_id = os.urandom(8).hex()
@@ -408,7 +408,6 @@ class StateStore:
             os.close(fd)
         self._reset(snap_id)
         self.force_snapshot = False
-        self._meta_dirty = False
 
 
 def _atomic_write(path: Path, data: bytes, mode: int = 0o600, hook: Callable[[], None] | None = None) -> None:
