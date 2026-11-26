@@ -8,6 +8,8 @@ DevForge Yugaantar, Track 4: Post-Quantum Security ("Trust, But Verify").
 
 **Workflow protected:** a user shares an encrypted file across their devices. A device is later reported lost. The prototype cuts that device's access, re-keys the file, raises an explainable alert and leaves a signed audit trail an operator can verify.
 
+**Contents:** [Try it](#try-it-in-90-seconds) | [Architecture](#architecture) | [What is different](#what-is-different-here) | [Setup](#clean-machine-setup) | [Grace period](#grace-period-and-cutoff-the-organizers-wording) | [Detection, measured](#detection-measured-python--m-kigbench_detect) | [API](#api) | [Web console](#web-console) | [Layout](#layout) | [Licence](#licence)
+
 ## Try it in 90 seconds
 
 ```bash
@@ -195,6 +197,10 @@ Operator CLI: `python -m kig.cli rotate-pending --url URL --key device.json` re-
 ### Local backend for a browser user screen (optional)
 
 A browser cannot make ML-DSA signatures, so a page for an ordinary device holder needs a small process on that person's machine that holds the device key: `python -m kig.webapi --key asha-laptop.json --url http://127.0.0.1:8443 [--port 8788]` (passphrase from `PRISM_PASSPHRASE` if the key file is sealed). It binds to 127.0.0.1 only, accepts only `Host: 127.0.0.1`, `localhost` or `[::1]`, and needs the random session token it prints at start-up in an `X-PRISM-Session` header. Endpoints, all JSON except the download: `GET /me`, `GET /files`, `POST /files` (`file_id`, `acl`, `content_b64`), `GET /files/<id>` (raw bytes after the client has checked the signed manifest and pins), `GET /devices` (own devices only), `POST /devices/lost` (`device`, `reason`), `POST /devices/preview` and `POST /devices/enroll` (`pub`, optional `limited: true`, and `expect_fingerprint` or `unverified: true`, which skips the fingerprint check and is recorded as unverified, so a UI should hide it behind an explicit warning; the service allows enrolment to admins only), `GET /activity?limit=` (audit entries about your own devices, with a fixed set of plain fields). It never returns keys, wrapped keys, the passphrase or the operator token. CORS is off unless `KIG_CORS_ORIGINS` lists exact origins, and it is not authentication. Even a 401 or a wrong-host answer carries the CORS headers, so a page sees the real error; calls are served one at a time and the service call times out after 10 s. A UI must show every returned string as text, never as markup. Limits: the unlocked device key lives in that process, so anything on the same machine that has the session token can act as the device; there is no TLS because it never leaves the loopback interface.
+
+## Web console
+
+A small original React app in `web/` gives an operator console (alerts with device, user, node and event; devices; files; the signed audit log with a chain check) and a device-holder view (upload, download, enrol, report lost). It is a client of the API below and holds no keys. To run it with demo data: `bash web/run_demo.sh` (Node 20 or newer), then open http://localhost:4173. Limits and licence notes: `web/README.md`.
 
 ## Detection rules
 

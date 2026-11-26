@@ -202,6 +202,7 @@ def page2(video: str) -> list:
         "Private keys sit in files (passphrase-sealed when set). Python cannot wipe memory. No hardware key store driver is shipped.",
         "Metadata (file ids, access lists, device ids, access times) is visible to the service. A malicious replica can ignore revocation for clients that talk only to it.",
         "Rule-based detection only: it misses slow attacks, probing with valid credentials and a valid insider (measured recall 0.67). Single worker per data directory.",
+        "Alert attribution is a claim, not proof: an alert names a device and user only when an enrolled device failed a signature check, otherwise it says unknown.",
     ]:
         f.append(B(x, sbullet))
     f.append(P("Out of scope, and why", h2))
