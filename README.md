@@ -160,7 +160,9 @@ kig/threshold.py k-of-n split of a secret (vetted Shamir)
 kig/backup.py    signed encrypted backups, verify before restore
 kig/audit.py     signed hash-chained log (the service's own checker)
 kig/store.py     signed snapshot + signed journal (O(1) writes)
-kig/cluster.py   primary + two replicas, signed revocation certificates, lease
+kig/cluster.py   primary + two replicas, signed revocation certificates, lease (in one process, for fast tests)
+kig/node.py      one cluster node as its own OS process over HTTP
+kig/netcluster.py three node processes on localhost, TCP relays, measured revocation time
 kig/doctor.py    read-only directory checker
 kig/bench.py     measured cost at several sizes
 kig/demo.py      the lost-device story

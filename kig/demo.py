@@ -166,6 +166,10 @@ def _story(tmp: str, svc: GuardService, admin: Client, ravi: Client) -> bool:
 
 
 if __name__ == "__main__":
+    if "--net" in sys.argv[1:]:                      # three real node processes over TCP on localhost (about 10 s)
+        from .netcluster import report
+        print(json.dumps(report(), indent=2))
+        sys.exit(0)
     if "--json" in sys.argv[1:]:
         print(json.dumps(cluster_report(), indent=2))
         sys.exit(0)

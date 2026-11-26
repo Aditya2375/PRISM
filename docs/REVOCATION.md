@@ -45,6 +45,34 @@ This is a simulation of the replication logic. It is not a deployment, and the t
 | Random mix of partitions, restarts, replays | No node ever forgets a revocation; after a sync all nodes reject every revoked device (12 seeds) | `test_random_partitions_restarts_and_replays_never_unrevoke` |
 | Kill the process at any point of a write | State stays consistent and revocations survive | `tests/test_chaos.py`, `tests/test_crash_and_cutoff.py` |
 
+## Real processes over TCP (`kig/node.py`, `kig/netcluster.py`)
+
+The same logic also runs as three separate OS processes. `python -m kig.demo --net` (or `python -m kig.netcluster`)
+starts `node-a` (primary), `node-b` and `node-c` (replicas) on localhost, each with its own data directory, signing key
+and audit log, and measures the time from the primary's acknowledgement of a revocation until each replica refuses the
+device. Clients talk to each node over HTTP. Node to node traffic goes through TCP relays owned by the harness, so a
+link can be cut or slowed without changing node code.
+
+* The primary pushes each new certificate to every replica as soon as the command commits, and retries a replica that
+  does not answer. Replicas also pull every 0.25 s.
+* Every pull reply carries a proof signed by the primary over the replica's random nonce, the highest audit sequence and
+  a hash of the certificate list. A replayed old reply, or one with certificates stripped out, fails the check and does
+  not refresh the lease (`test_certificate_reply_must_be_fresh_complete_and_signed_for_this_request`).
+* A replica trusts only the primary public key it was started with (`--primary-pub`, read from a file). A replica pinned to
+  another key never syncs and answers `node_stale` (`test_replica_pinned_to_a_different_primary_key_never_serves`).
+* `/sync/*` and `/node/status` need a shared cluster token. The token only keeps strangers from reading metadata. Nothing
+  is trusted because it carries the token (`test_sync_endpoints_need_the_cluster_token`,
+  `test_replica_ignores_a_certificate_signed_by_another_key`).
+* Replica restart, primary stop and restart, a replica that was down during a revocation, and a cut link are covered by
+  `tests/test_netcluster.py`: a revoked device stays revoked everywhere and a node that cannot confirm it is current
+  refuses everyone.
+
+Honest limits of this version: all processes share one host, one clock and the loopback interface, so the printed
+milliseconds are not WAN numbers (the relay can add a delay, reported as `injected_delay_ms`). Traffic is plain HTTP
+and the cluster token travels in it; across hosts it would need TLS. A party that can see or block that traffic can
+delay a replica but not make it accept an unsigned certificate. Client requests are not relayed, so a partition test
+cuts only the sync links.
+
 ## Limits, stated plainly
 
 * Exposure window: a replica that is partitioned from the primary but not yet past `LEASE_S` (5 s) can still serve a
