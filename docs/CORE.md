@@ -173,7 +173,7 @@ check and the audit chain run there. On the original it then hashes every refere
 
 `python -m kig.demo` is the lost-device story. `python -m kig.demo --story` adds a blob tamper, an edited audit
 copy, a crash in the middle of a rotation with recovery on restart, and a claim-to-evidence table. It exits 1 if
-any of those checks fails. Not in it yet: the three-node revocation timings.
+any of those checks fails. Step 6 shows per-node revocation timings on the simulated three-node cluster.
 
 ## Enrolling a device from the command line
 

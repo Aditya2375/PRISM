@@ -65,7 +65,26 @@ def _story(tmp: str, svc: GuardService, admin: Client, ravi: Client) -> bool:
     from .service import SimulatedCrash
     good = True
 
-    step(6, "Tampering: a stored ciphertext is changed on disk, and an audit line is edited")
+    step(6, "Three nodes: the same lost phone is cut off everywhere (simulated nodes, seeded network delay)")
+    import random
+    from .cluster import Bus, Cluster
+    rnd = random.Random(7)
+    with tempfile.TemporaryDirectory() as ctmp:
+        cl = Cluster(ctmp, bus=Bus(lambda n: rnd.uniform(0.005, 0.05)))
+        time.sleep(0.01)
+        boss, phone = Device.generate("asha-laptop", "asha"), Device.generate("asha-phone", "asha")
+        cl.primary.bootstrap("asha", "asha-laptop", boss.sign_pub, boss.kem_pub)
+        cadmin = cl.writer(boss)
+        cadmin.call("enroll_device", **phone.public_args())
+        cl.bus.drain(); cl.sync_all()
+        cadmin.call("report_lost", device="asha-phone", reason="stolen")
+        t = cl.measure_revocation(phone)
+        for name in sorted(t):
+            print(f"   {name}: rejects the lost phone {t[name] * 1000:6.1f} ms after the primary acknowledged")
+        good = good and max(t.values()) < 1.0
+        print("   (nodes run in one process here; the timings measure the replication logic, not a real network)")
+
+    step(7, "Tampering: a stored ciphertext is changed on disk, and an audit line is edited")
     h = next(iter(svc.blob_hashes()))
     bp = svc._blob_path(h)
     orig = bp.read_bytes()
@@ -87,7 +106,7 @@ def _story(tmp: str, svc: GuardService, admin: Client, ravi: Client) -> bool:
     good = good and any(r[0] == "FAIL" and r[1] in ("audit", "open") for r in check(tmp))
     ap.write_text(saved)
 
-    step(7, "Crash in the middle of a key rotation, then restart")
+    step(8, "Crash in the middle of a key rotation, then restart")
     svc.crash_at = "rotate_mid_commit"
     try:
         admin.rotate("payroll-2026", acl=["asha", "ravi"])
@@ -103,13 +122,14 @@ def _story(tmp: str, svc: GuardService, admin: Client, ravi: Client) -> bool:
     print(f"   audit chain after recovery: {ok3} ({why})")
     good = good and ok3
 
-    step(8, "Claim to evidence")
+    step(9, "Claim to evidence")
     rows = [
         ("Lost device is cut off at once", "step 3: validly signed request denied, no key released"),
+        ("Revocation reaches every node quickly", "step 6: all three nodes reject the phone, timings printed"),
         ("Revocation is visible and explained", "step 5: alert R1 with the two audit entries as evidence"),
-        ("A changed stored ciphertext is detected", "step 6: the one altered ciphertext is refused on read and doctor FAILs"),
-        ("An edited audit line is detected", "step 6: one edited line on disk makes doctor FAIL"),
-        ("A crash does not lose or half-apply a rotation", "step 7: restart recovers, file readable, chain valid"),
+        ("A changed stored ciphertext is detected", "step 7: the one altered ciphertext is refused on read and doctor FAILs"),
+        ("An edited audit line is detected", "step 7: one edited line on disk makes doctor FAIL"),
+        ("A crash does not lose or half-apply a rotation", "step 8: restart recovers, file readable, chain valid"),
     ]
     for claim, ev in rows:
         print(f"   {claim:<48} {ev}")
