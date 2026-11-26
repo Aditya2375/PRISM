@@ -102,11 +102,11 @@ def combine(shares: list[bytes]) -> bytes:
     qualified = []
     for g in groups.values():
         seen, uniq = set(), []
-        for d in g:
-            if d["i"] not in seen:
-                seen.add(d["i"]); uniq.append(d)
+        for d in g:          # drop exact repeats only: a forged share that reuses an index must not hide the real one
+            if (d["i"], d["_share"]) not in seen:
+                seen.add((d["i"], d["_share"])); uniq.append(d)
         good = [d for d in uniq if d["_good"]]
-        if len(good) >= g[0]["k"]:
+        if len({d["i"] for d in good}) >= g[0]["k"]:
             qualified.append((g[0], good, [d["i"] for d in uniq if not d["_good"]]))
         else:
             bad_all += [f"index {d['i']}" for d in uniq if not d["_good"]]
@@ -122,7 +122,9 @@ def combine(shares: list[bytes]) -> bytes:
     tried: set[tuple] = set()
 
     def attempt(rest):
-        key = tuple(sorted(d["i"] for d in rest))
+        if len({d["i"] for d in rest}) != len(rest):
+            return None                      # two candidates for one index cannot both be in a subset
+        key = tuple(sorted((d["i"], d["_share"]) for d in rest))
         if key in tried:
             return None
         tried.add(key)
@@ -145,7 +147,11 @@ def combine(shares: list[bytes]) -> bytes:
                 return res
     # 2. the AEAD tells us when a subset is right. Random subsets find an honest one quickly even when the bad
     #    holders are many (chance per try = C(honest,k) / C(offered,k)); small cases are covered in full.
-    total = math.comb(len(good), k)
+    by_idx: dict[int, list[dict]] = {}
+    for d in good:
+        by_idx.setdefault(d["i"], []).append(d)
+    single = all(len(v) == 1 for v in by_idx.values())
+    total = math.comb(len(by_idx), k) if single else RANDOM_TRIES + 1
     rnd = random.Random(hashlib.sha256(b"".join(sorted(d["_share"] + bytes([d["i"]]) for d in good))).digest())  # same input, same search
     if total <= RANDOM_TRIES:
         combos = list(itertools.combinations(good, k))
@@ -156,7 +162,7 @@ def combine(shares: list[bytes]) -> bytes:
                 return res
     else:
         for _ in range(RANDOM_TRIES):
-            res = attempt(rnd.sample(good, k))
+            res = attempt([rnd.choice(by_idx[i]) for i in rnd.sample(sorted(by_idx), k)])
             if res is not None:
                 return res
     raise ThresholdError("shares do not combine (bounded search: " + ("every subset of k was tried" if total <= RANDOM_TRIES

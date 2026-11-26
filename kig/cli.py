@@ -14,6 +14,7 @@ import urllib.error
 import urllib.request
 
 from . import crypto as c
+from . import vault
 from .client import Client, Device
 from .service import Denied, GuardService
 
@@ -26,8 +27,14 @@ def _post(url: str, timeout: float = 15):
             with urllib.request.urlopen(req, timeout=timeout) as r:
                 return json.load(r)
         except urllib.error.HTTPError as e:
-            body = json.load(e)
-            raise Denied(body.get("error", "error"), body.get("reason", ""), e.code) from None
+            try:
+                body = json.load(e)
+                body = body if isinstance(body, dict) else {}
+            except (ValueError, OSError):
+                body = {}
+            raise Denied(str(body.get("error", "error"))[:64], str(body.get("reason", ""))[:200] or f"HTTP {e.code}", e.code) from None
+        except (urllib.error.URLError, OSError, ValueError, TimeoutError):
+            raise Denied("unreachable", "service unreachable or sent an unreadable reply", 502) from None
     return send
 
 
@@ -92,7 +99,7 @@ def main(argv: list[str] | None = None) -> int:
     a = ap.parse_args(argv)
 
     if a.op == "backup-key":
-        from . import threshold, vault
+        from . import threshold
         try:
             if a.bk == "split":
                 secret = Path(a.key).read_bytes()
@@ -184,7 +191,7 @@ def main(argv: list[str] | None = None) -> int:
         except c.CryptoError as e:
             print(f"refused: {e}", file=sys.stderr)
             return 3
-        Path(a.out).write_bytes(data)
+        vault.write_atomic(a.out, data, 0o600)     # never follows a symlink planted at the output path
         print(f"wrote {len(data)} bytes to {a.out}")
         return 0
     if a.op == "enroll":

@@ -106,16 +106,25 @@ class Device:
 
 class Client:
     def __init__(self, device: Device, transport: Transport, clock: Callable[[], float] = time.time,
-                 audience: str = "primary", state_path: str | Path | None = None):
+                 audience: str = "primary", state_path: str | Path | None = None,
+                 roots: list[str] | None = None, tofu_root: bool = True, verify_directory: bool = True):
+        """``roots``: fingerprints of the device(s) every enrolment must trace back to (the first admin's device, and
+        any device an operator added by offline recovery). Without it, the roots behind this device's own enrolment
+        are pinned on first use (trust on first use) and checked on every later call. ``verify_directory=False``
+        turns the check off; only tests do that."""
+        self.verify_directory = verify_directory
+        self._roots: list[str] | None = list(roots) if roots else None
+        self.tofu_root = tofu_root
+        self._trusted: dict[str, tuple[str, str, str]] = {}   # device -> (user, sign_pub, kem_pub) proven to the root
         self.dev, self.send, self.clock, self.aud = device, transport, clock, audience
         self.state_path = Path(state_path) if state_path else None
         self.seen_epoch: dict[str, int] = {}   # newest key version this client has seen per file
         self.rotation_errors: list[str] = []   # auto-rotation failures other than a lost race
-        self.pins: dict[str, Any] = {"signers": {}, "owners": {}, "writers": {}, "writer_users": {}, "admins": {}}   # first-seen signer keys and file owners
+        self.pins: dict[str, Any] = {"signers": {}, "owners": {}, "writers": {}, "writer_users": {}, "admins": {}, "roots": []}   # first-seen signer keys and file owners
         if self.state_path and Path(str(self.state_path) + ".pins").exists():
             try:
                 self.pins = json.loads(Path(str(self.state_path) + ".pins").read_text())
-                self.pins.setdefault("writers", {}); self.pins.setdefault("writer_users", {}); self.pins.setdefault("admins", {}); self.pins["signers"], self.pins["owners"]
+                self.pins.setdefault("writers", {}); self.pins.setdefault("writer_users", {}); self.pins.setdefault("admins", {}); self.pins.setdefault("roots", []); self.pins["signers"], self.pins["owners"]
             except (ValueError, OSError, TypeError, KeyError):
                 raise c.CryptoError("client pin file is damaged; refusing to start without it") from None
         if self.state_path and self.state_path.exists():
@@ -154,6 +163,14 @@ class Client:
         if not c.verify(c.b64d(m["writer_sign_pub"]), "manifest", msg, c.b64d(m["sig"])):
             raise c.CryptoError("manifest signature invalid: acl, owner or version were changed")
         writers = self.pins["writers"].get(file_id, {})
+        if not writers and self.verify_directory:
+            # first sight of this file: the writer must trace back to the pinned root, or the server could invent a file
+            self._ensure_roots()
+            if self._root_list():
+                dirm = self._directory([m["writer"]])
+                u, sp, _ = self._prove(m["writer"], dirm)
+                if u != wuser or sp != m["writer_sign_pub"]:
+                    raise c.CryptoError("the file's writer does not match its signed enrolment")
         if writers:
             self._check_writer_authority(file_id, m, writers, wuser, owner)
         if writers and m["writer"] not in writers:
@@ -242,8 +259,100 @@ class Client:
                            _wrap_ctx(file_id, self.dev.device_id, epoch))
         return c.aead_decrypt(kek, c.b64d(wrap["blob"]), _file_aad(file_id, epoch))
 
+    # -- root of trust ---------------------------------------------------------
+    def _root_list(self) -> list[str]:
+        if self._roots:
+            return self._roots
+        if self.pins.get("roots"):
+            return self.pins["roots"]
+        return []
+
+    @staticmethod
+    def _env_body(env: dict[str, Any]) -> dict[str, Any]:
+        return {k: env[k] for k in ("cmd", "device", "ts", "nonce", "args") + (("aud",) if "aud" in env else ())}
+
+    def _prove(self, dev_id: str, dirm: dict[str, Any], depth: int = 0) -> tuple[str, str, str]:
+        """Return (user, sign_pub, kem_pub) of a device if its enrolment chain ends at a pinned root, else raise."""
+        if dev_id in self._trusted:
+            return self._trusted[dev_id]
+        if depth > 16:
+            raise c.CryptoError("enrolment chain too long")
+        info = dirm.get(dev_id)
+        try:
+            user, sp, kp, proof = info["user"], info["sign_pub"], info["kem_pub"], info.get("proof")
+            fp = device_fingerprint(dev_id, user, c.b64d(sp), c.b64d(kp))
+        except (KeyError, TypeError, c.CryptoError):
+            raise c.CryptoError(f"the directory has no valid entry for device {dev_id}") from None
+        if proof is None:
+            if fp not in self._root_list():
+                raise c.CryptoError(f"device {dev_id} is not enrolled by anyone and is not a pinned root (fingerprint {fp})")
+        else:
+            try:
+                body = self._env_body(proof)
+                signer = body["device"]
+                ok = (body["cmd"] == "enroll_device" and body["args"]["device"] == dev_id and body["args"]["user"] == user
+                      and body["args"]["sign_pub"] == sp and body["args"]["kem_pub"] == kp and signer != dev_id)
+            except (KeyError, TypeError):
+                ok = False
+            if not ok:
+                raise c.CryptoError(f"the enrolment record for device {dev_id} does not match its keys")
+            _, ssp, _ = self._prove(signer, dirm, depth + 1)
+            if not c.verify(c.b64d(ssp), "cmd", c.canonical(body), c.b64d(proof["sig"])):
+                raise c.CryptoError(f"the enrolment of device {dev_id} is not signed by a device the root vouches for")
+        self._trusted[dev_id] = (user, sp, kp)
+        return user, sp, kp
+
+    def _directory(self, ids: list[str]) -> dict[str, Any]:
+        r = self.call("directory", devices=sorted(set(ids)))
+        d = r.get("devices") if isinstance(r, dict) else None
+        if not isinstance(d, dict):
+            raise c.CryptoError("the directory reply is unreadable")
+        return d
+
+    def _ensure_roots(self) -> None:
+        if self._root_list() or not self.tofu_root:
+            return
+        # first use: find the root(s) behind our own enrolment and pin them (trust on first use)
+        dirm = self._directory([self.dev.device_id])
+        me = dirm.get(self.dev.device_id)
+        if not me or me.get("sign_pub") != c.b64e(self.dev.sign_pub) or me.get("kem_pub") != c.b64e(self.dev.kem_pub):
+            raise c.CryptoError("the directory does not list this device with its own keys")
+        roots, seen, cur = [], set(), self.dev.device_id
+        while cur in dirm and cur not in seen:
+            seen.add(cur)
+            e = dirm[cur]
+            if e.get("proof") is None:
+                roots.append(device_fingerprint(cur, e["user"], c.b64d(e["sign_pub"]), c.b64d(e["kem_pub"])))
+                break
+            cur = e["proof"].get("device")
+        if not roots:
+            raise c.CryptoError("could not find the root behind this device's enrolment")
+        self.pins["roots"] = roots
+        self._save_pins()
+
+    def _check_devices(self, devs: dict[str, str]) -> None:
+        """Every recipient key must belong to a device the root vouches for."""
+        if not self.verify_directory:
+            return
+        self._ensure_roots()
+        if not self._root_list():
+            return
+        need = [d for d in devs if d != self.dev.device_id and d not in self._trusted]
+        if need:
+            dirm = self._directory(need)
+        for d, kem in devs.items():
+            if d == self.dev.device_id:
+                if kem != c.b64e(self.dev.kem_pub):
+                    raise c.CryptoError("the server listed a different key for this device")
+                continue
+            _, _, kp = self._prove(d, dirm) if d not in self._trusted else self._trusted[d]
+            if kp != kem:
+                raise c.CryptoError(f"the key listed for device {d} differs from the one in its signed enrolment")
+
     def _recipients(self, acl: list[str]) -> dict[str, str]:
-        return self.call("eligible", users=acl)["devices"]
+        devs = self.call("eligible", users=acl)["devices"]
+        self._check_devices(devs)
+        return devs
 
     # -- file operations -------------------------------------------------------
     def put_file(self, file_id: str, plaintext: bytes, acl: list[str] | None = None) -> dict[str, Any]:

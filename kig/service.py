@@ -31,7 +31,7 @@ from .store import StateStore, StoreCorrupt
 SKEW_S = 30
 GRACE_S = 30  # rotation cutoff: the previous key version stays readable this long for in-flight transfers
 MAX_FILE_BYTES = 5 * 1024 * 1024
-READ_ONLY_CMDS = {"fetch", "whoami", "eligible", "list_files", "my_devices", "my_activity"}
+READ_ONLY_CMDS = {"fetch", "whoami", "eligible", "list_files", "my_devices", "my_activity", "directory"}
 MAX_USER_FILES = 1_000            # per owner
 MAX_USER_BYTES = 256 * 1024 * 1024   # per owner, ciphertext on disk including the kept previous version
 MAX_TOTAL_BYTES = 4 * 1024 ** 3      # whole service
@@ -105,6 +105,9 @@ def hmac_compare(a: str, b: str) -> bool:
     return hmac.compare_digest(a.encode(), b.encode())
 
 
+_DIR_LOCKS: dict[str, int] = {}
+
+
 class GuardService:
     def __init__(self, data_dir: str | Path, clock: Callable[[], float] = time.time,
                  name: str = "primary", read_only: bool = False, lease_s: float | None = None,
@@ -119,6 +122,7 @@ class GuardService:
         self.dir = Path(data_dir)
         self.dir.mkdir(parents=True, exist_ok=True, mode=0o700)
         self._secure_dir()
+        self._lock_dir()
         self.clock = clock
         self._lock = threading.RLock()
         self.crash_at: str | None = None  # fault injection: name of a crash point
@@ -306,6 +310,21 @@ class GuardService:
         if not ok:
             raise StateCorrupt(f"state is behind the audit log by {len(tail)} state-changing entries; the journal or "
                                "snapshot lost acknowledged commits. Restore from a verified backup")
+
+    def _lock_dir(self) -> None:
+        """One service process per data directory. A second process (for example uvicorn --workers 2) would write the
+        same journal and corrupt it, so it refuses to start. Within one process a restart in tests is allowed."""
+        import fcntl
+        key = str(self.dir.resolve())
+        if key in _DIR_LOCKS:
+            return
+        fd = os.open(self.dir / ".datalock", os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0), 0o600)
+        try:
+            fcntl.lockf(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            os.close(fd)
+            raise RuntimeError(f"another process is already serving {self.dir}; run one worker per data directory") from None
+        _DIR_LOCKS[key] = fd
 
     def _secure_dir(self) -> None:
         """The data directory holds the signing key and every blob: owner-only. Tighten it, or refuse if we cannot."""
@@ -1066,6 +1085,25 @@ class GuardService:
         self._crash("rotate_after_commit")
         return {"ok": True, "epoch": f["epoch"]}
 
+    def cmd_directory(self, dev, user, role, args):
+        """Public keys and signed enrolment proofs for some devices, plus the chain of enrollers behind each, so a client
+        can check them against a root it pinned. Public data only; the proofs are requests admins signed."""
+        ids = args.get("devices")
+        if not isinstance(ids, list) or not ids or len(ids) > 64:
+            raise Denied("bad_request", "devices must be a list of 1 to 64 ids", 400)
+        want, out = [_valid_id(i) for i in ids], {}
+        while want and len(out) < 512:
+            d = want.pop()
+            v = self.state["devices"].get(d)
+            if v is None or d in out:
+                continue
+            proof = v.get("enrolled_proof")
+            out[d] = {"user": v["user"], "sign_pub": v["sign_pub"], "kem_pub": v["kem_pub"], "status": v["status"],
+                      "proof": proof}
+            if isinstance(proof, dict) and isinstance(proof.get("device"), str):
+                want.append(proof["device"])
+        return {"devices": out}
+
     def cmd_my_devices(self, dev, user, role, args):
         """The caller's own devices only: id, status, enrolment time. No keys, no other user's devices."""
         return {"devices": [{"device": d, "status": v["status"], "enrolled_at": v.get("enrolled_at"), "this": d == dev}
@@ -1101,10 +1139,15 @@ class GuardService:
     # ------------------------------------------------------------ read models
 
     def alerts(self) -> list[dict[str, Any]]:
-        return [dict(e["data"], seq=e["seq"], ts=e["ts"]) for e in self.audit.entries
-                if e["type"] == "alert.raised"]
+        with self._lock:
+            return [dict(e["data"], seq=e["seq"], ts=e["ts"]) for e in list(self.audit.entries)
+                    if e["type"] == "alert.raised"]
 
     def overview(self) -> dict[str, Any]:
+        with self._lock:                      # state is edited under this lock; copy under it too
+            return self._overview()
+
+    def _overview(self) -> dict[str, Any]:
         s = self.state
         return {
             "users": {u: dict(v) for u, v in s["users"].items()},
