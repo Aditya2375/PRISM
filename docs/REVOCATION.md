@@ -56,7 +56,7 @@ This is a simulation of the replication logic. It is not a deployment, and the t
   needs a colluding former admin and a malicious service.
 * A device that was revoked has already decrypted what it read. Rotation protects the next version, not the past.
 * A lost-device notice written by the primary is trusted. A compromised primary signing key breaks the whole scheme.
-* The nodes share one process and one clock source in the simulation. Clock skew between real hosts is bounded by the
+* The nodes share one process and one clock source in the simulation (`Cluster.skew` shifts a node's wall clock in tests). Clock skew between real hosts is bounded by the
   30 s request window and is not simulated.
 * A request signed in the same millisecond a node boots can be refused as older than its boot instant. That is a
   deliberate rule against replays across restarts and costs one retry.

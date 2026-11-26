@@ -93,8 +93,18 @@ def write_atomic(path: str | Path, data: bytes, mode: int = 0o600, exclusive: bo
             fh.flush()
             os.fsync(fh.fileno())
         if exclusive:
-            os.link(tmp, p)             # fails if the target exists
-            os.unlink(tmp)
+            try:
+                os.link(tmp, p)         # atomic, fails if the target exists
+                os.unlink(tmp)
+            except FileExistsError:
+                raise
+            except OSError:             # no hard links here (FAT, some network mounts): create the target exclusively
+                tfd = os.open(p, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), mode)
+                with os.fdopen(tfd, "wb") as fh:
+                    fh.write(data)
+                    fh.flush()
+                    os.fsync(fh.fileno())
+                os.unlink(tmp)
         else:
             os.replace(tmp, p)
     except BaseException:

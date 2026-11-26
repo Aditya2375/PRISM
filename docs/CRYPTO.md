@@ -4,8 +4,11 @@ Suite id (written into every key file, vault file, state file and backup, refuse
 `PRISM-1:HPKE(MLKEM768-X25519,HKDF-SHA256,ChaCha20Poly1305)+AES-256-GCM+ML-DSA-65+scrypt`
 
 ## No custom crypto
-Every primitive is called from the pinned `cryptography==50.0.2` package (the event minimum is 50.0.2). P.R.I.S.M. does not implement a cipher,
-hash, KDF, KEM, signature scheme or mode, and does not combine two secrets itself. What P.R.I.S.M. writes is
+Every primitive is called from the pinned `cryptography==50.0.2` package (the event minimum is 50.0.2), with one
+exception: the optional k-of-n split of the backup key uses PyCryptodome's Shamir (`Crypto.Protocol.SecretSharing`,
+pinned `pycryptodome==3.21.0`; the secret itself is still sealed with AES-256-GCM from `cryptography`). P.R.I.S.M. does
+not implement a cipher, hash, KDF, KEM, signature scheme, secret-sharing scheme or mode, and does not combine two
+secrets itself. What P.R.I.S.M. writes is
 protocol glue: which key encrypts what, and what bound data goes into the associated data.
 
 | Need | Primitive (from `cryptography`) | Where |
@@ -15,7 +18,8 @@ protocol glue: which key encrypts what, and what bound data goes into the associ
 | Sign state, snapshots, certificates, backups, audit entries | ML-DSA-65 (FIPS 204), purpose string prefixed to the message | `crypto.sign`, `verify` |
 | Passphrase to key | scrypt N=2^15 r=8 p=1, random salt, parameters authenticated | `vault.seal` |
 | Key commitment | HMAC-SHA256 keyed with the file key over file id and version | `client._commit` |
-| Hashes | SHA-256 | blob names, audit chain |
+| Hashes | SHA-256 | blob names, audit chain, share fingerprints |
+| Split a key k-of-n | Shamir from PyCryptodome (library, not ours), AES-256-GCM seals the secret under a 32-byte wrapping key | `threshold.split`, `combine` |
 
 Evidence about the library (`cryptography==50.0.2`, pinned in `requirements.txt`): `tests/test_crypto_proof.py`
 runs NIST ACVP vectors (usnistgov/ACVP-Server, commit pinned in `tests/vectors/acvp.json`):
@@ -61,6 +65,7 @@ tampering and cross-purpose rejection, and rely on the library for correctness.
   Nothing was released before this id existed, so there is no older format to upgrade from.
 * Versioned by the `kig/v1/...` context strings inside HPKE `info` and AEAD associated data (a different
   version fails authentication): file ciphertext, wraps, snapshots and certificates (purpose strings).
+* Share files from `kig backup-key split` carry `v: 1` and are refused if the version differs; they have no suite field.
 * Unversioned: `revoked.log`, the audit log entries (signed, no suite field), and the client's seen-epoch file.
   Changing any of these would need a deliberate migration.
 Frozen data written by this release is opened by `tests/test_frozen_format.py`.

@@ -9,10 +9,11 @@ where a claim could be doubted.
 | --- | --- | --- |
 | File key (DEK), one per file version | random 256-bit, AES-256-GCM | never on the server; wrapped per device |
 | Device wrap key | X25519 + ML-KEM-768 hybrid, library HPKE suite | device key file |
-| Device and server signing keys | ML-DSA-65 | device key file, `server_sign.key` |
+| Device and server signing keys | ML-DSA-65 | device key file, `server_sign.key` or a `KeyStore` (see Key storage interface) |
 | Backup key | X25519 + ML-KEM-768 hybrid | offline, operator held |
 
-All primitives come from `cryptography==50.0.2` (event minimum: 50.0.2). There is no hand-written combiner: the hybrid
+All primitives come from `cryptography==50.0.2` (event minimum: 50.0.2), except the optional k-of-n key split, which
+uses PyCryptodome's Shamir (see below). There is no hand-written combiner: the hybrid
 KEM is the library's standard `MLKEM768_X25519` HPKE suite with HKDF-SHA256 and
 ChaCha20-Poly1305. Binding data (file id, device id, version, purpose) goes in the HPKE `info`
 input and in the AEAD associated data of the layer above, so a wrap cannot be moved to another
@@ -100,11 +101,11 @@ flips are all rejected (`tests/test_backup.py`).
 
 ## Limits
 * A revoked device keeps what it already decrypted. Rotation protects later versions only.
-* The server is trusted for the device directory (no out-of-band fingerprint check).
+* The server is trusted for the device directory at first contact. The fingerprint check is optional, and clients pin writers after first sight (see Signed manifest).
 * Python cannot wipe key material from memory. A passphrase in the environment is visible to the
   process owner. A hardware keystore would be the production answer.
-* Write access is owner or admin only; there are no per-user write grants. The client trusts the ACL
-  and device directory the server returns, so a malicious server could add recipients to future wraps.
+* Write access is owner or admin only; there are no per-user write grants. A malicious server cannot forge a
+  signed manifest, but it can withhold updates, and it still decides which devices receive wraps for a device no client has seen.
 * Any active device of a user can revoke all other devices of that user, by design.
 * The log is checked at start-up against the number of entries `state.json` has seen (state is saved
   after every logged event) and the `audit.head` copy of the last entry. That catches accidents, not
@@ -160,7 +161,7 @@ a known limit for stores beyond a few thousand files.
 received hash differently, which is what a swap of keys in transit produces. The fingerprint and whether it was
 checked are written to the audit entry. The check only helps if the fingerprint is compared over a channel the
 attacker does not control, and it is optional: without `expect_fingerprint` the enrolment is recorded as
-`verified: false`. The owner-signed manifest and ACL are not built yet.
+`verified: false`. The signed per-version manifest (below) covers what happens after enrolment.
 
 ## `kig doctor`
 
@@ -225,8 +226,8 @@ python verifier/prism_verify.py backup --file x.bak --pub data/server_sign.pub
 python verifier/prism_verify.py state  --file data/state.json --pub data/server_sign.pub
 ```
 
-`audit` rejects entries with fields outside the signed set, rejects an empty log, and re-derives every entry hash and checks every signature, the links, the sequence and the head anchor, and
-refuses to pass without an anchor. `backup` checks the manifest signature, the signed blob list and every blob's
+`audit` rejects entries with fields outside the signed set, rejects an empty log, and re-derives every entry hash and checks every signature, the links, the sequence and the head anchor if one is given. With no
+`--expect-head` it exits 2 and says completeness is not established. `backup` checks the manifest signature, the signed blob list and every blob's
 hash, without the backup key (it does not open the sealed metadata). `state` checks the signed snapshot. It does not
 check that the journal after the snapshot is complete (the service does that at start-up). Tail removal can only be
 excluded with a head or anchor recorded outside the directory. The format rules are written out a second time in
@@ -242,7 +243,9 @@ with AES-256-GCM (`cryptography`); the wrapping key is split as two 16-byte halv
 bits. Fields are validated before Shamir sees them (a share index of -1 once made the library loop forever). Each
 share carries a fingerprint of its own bytes. The fingerprint catches accidents only, since anyone can recompute it. Damaged
 shares are named and skipped; when more than k shares are offered and one fails to open, combine leaves out one share at
-a time, then two, and so on (at most 200 attempts), which survives a few bad holders but not many. A stray share from
+a time, then two (200 attempts), then tries up to 3000 random subsets of k (every subset when there are fewer than that).
+AES-GCM tells it when a subset is right, so recovery works whenever enough honest shares are offered and the random
+search lands on them: expected tries are C(offered,k) / C(honest,k), and an unrecoverable set takes around ten seconds to give up. A stray share from
 another split is ignored if exactly one set has enough intact shares; if two sets do, it refuses. The CLI refuses to
 overwrite existing share files or an existing output key unless `--force` is given, and creates the share directory 0700. Limits: the sealed secret is repeated in every share; no verifiable sharing, so a forged share with a
 matching fingerprint is found only by trying subsets; the library is one we use and did not audit.

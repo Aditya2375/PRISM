@@ -11,7 +11,7 @@ maintainers). Please include steps to reproduce. There is no bug bounty.
 
 * The exact guarantees, and the attacks that are out of scope, are in `THREAT_MODEL.md` and `docs/CORE.md`.
 * All cryptography comes from the pinned `cryptography` library (ML-KEM-768 with X25519 in HPKE, AES-256-GCM,
-  ML-DSA-65, scrypt). The project adds no cryptographic primitive of its own. `docs/CRYPTO.md` lists the
+  ML-DSA-65, scrypt), except the optional k-of-n backup-key split, which uses PyCryptodome's Shamir. The project adds no cryptographic primitive of its own. `docs/CRYPTO.md` lists the
   constructions and the known-answer tests that check them.
 * Python cannot wipe key material from memory. A revoked device keeps what it already decrypted.
 * Cluster nodes in this repository are in-process simulations.

@@ -14,7 +14,9 @@ from __future__ import annotations
 import hashlib
 import itertools
 import json
+import math
 import os
+import random
 
 from Crypto.Protocol.SecretSharing import Shamir
 from cryptography.exceptions import InvalidTag
@@ -23,6 +25,7 @@ from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from . import crypto as c
 
 MAX_TRIES = 200
+RANDOM_TRIES = 3000          # each try costs a few ms: a failing search can take around ten seconds
 
 
 class ThresholdError(Exception):
@@ -117,25 +120,45 @@ def combine(shares: list[bytes]) -> bytes:
     k = f["k"]
     hdr = {"v": 1, "set": f["set"], "k": k, "n": f["n"]}
     tried: set[tuple] = set()
-    attempts = 0
-    for r in range(0, len(good) - k + 1):                  # leave out r shares, take the first k of the rest
+
+    def attempt(rest):
+        key = tuple(sorted(d["i"] for d in rest))
+        if key in tried:
+            return None
+        tried.add(key)
+        try:
+            wrap = (Shamir.combine([(d["i"], d["_share"][:16]) for d in rest]) +
+                    Shamir.combine([(d["i"], d["_share"][16:]) for d in rest]))
+            return AESGCM(wrap).decrypt(c.b64d(f["nonce"]), c.b64d(f["sealed"]), c.canonical(hdr))
+        except (InvalidTag, ValueError, c.CryptoError):
+            return None
+
+    # 1. cheap: leave out r shares (r = 0, 1, 2, ...), take the first k of the rest
+    n_tries = 0
+    for r in range(0, len(good) - k + 1):
         for out in itertools.combinations(range(len(good)), r):
-            rest = [d for j, d in enumerate(good) if j not in out][:k]
-            key = tuple(sorted(d["i"] for d in rest))
-            if key in tried:
-                continue
-            tried.add(key)
-            attempts += 1
-            if attempts > MAX_TRIES:
+            if n_tries >= MAX_TRIES:
                 break
-            try:
-                wrap = (Shamir.combine([(d["i"], d["_share"][:16]) for d in rest]) +
-                        Shamir.combine([(d["i"], d["_share"][16:]) for d in rest]))
-                return AESGCM(wrap).decrypt(c.b64d(f["nonce"]), c.b64d(f["sealed"]), c.canonical(hdr))
-            except (InvalidTag, ValueError, c.CryptoError):
-                continue
-        if attempts > MAX_TRIES:
-            break
+            n_tries += 1
+            res = attempt([d for j, d in enumerate(good) if j not in out][:k])
+            if res is not None:
+                return res
+    # 2. the AEAD tells us when a subset is right. Random subsets find an honest one quickly even when the bad
+    #    holders are many (chance per try = C(honest,k) / C(offered,k)); small cases are covered in full.
+    total = math.comb(len(good), k)
+    rnd = random.Random()
+    if total <= RANDOM_TRIES:
+        combos = list(itertools.combinations(good, k))
+        rnd.shuffle(combos)
+        for combo in combos:
+            res = attempt(list(combo))
+            if res is not None:
+                return res
+    else:
+        for _ in range(RANDOM_TRIES):
+            res = attempt(rnd.sample(good, k))
+            if res is not None:
+                return res
     raise ThresholdError("shares do not combine: a share was altered or is not from this set"
                          + (f" (damaged by fingerprint: {bad + bad_all})" if bad or bad_all else "")
                          + (f"; {ignored} offered share(s) ignored" if ignored else ""))

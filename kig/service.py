@@ -955,18 +955,24 @@ class GuardService:
 
     def metrics(self) -> dict[str, Any]:
         """Counts only: no names, keys or file ids, so the endpoint cannot leak who has what."""
-        s = self.state
-        by_dev: dict[str, int] = {}
-        for dv in s["devices"].values():
-            by_dev[dv["status"]] = by_dev.get(dv["status"], 0) + 1
-        events: dict[str, int] = {}
-        for e in self.audit.entries:
-            events[e["type"]] = events.get(e["type"], 0) + 1
-        lease_age = None if self.last_sync is None else round(self.mono() - self.last_sync, 3)
-        return {"users": len(s["users"]), "devices_by_status": by_dev, "files": len(s["files"]),
-                "files_needing_rotation": sum(1 for f in s["files"].values() if f["needs_rotation"]),
-                "audit_entries": len(self.audit.entries), "audit_events": events,
-                "read_only": self.read_only, "lease_age_s": lease_age}
+        with self._lock:                         # state changes under this lock, so a scrape never sees a half edit
+            s = self.state
+            by_dev: dict[str, int] = {}
+            for dv in s["devices"].values():
+                by_dev[dv["status"]] = by_dev.get(dv["status"], 0) + 1
+            ents = self.audit.entries
+            counts = self.__dict__.setdefault("_ev_counts", {})
+            seen = self.__dict__.get("_ev_seen", 0)
+            if seen > len(ents):                 # the log was replaced: count again
+                counts.clear(); seen = 0
+            for e in ents[seen:]:
+                counts[e["type"]] = counts.get(e["type"], 0) + 1
+            self._ev_seen = len(ents)
+            lease_age = None if self.last_sync is None else round(self.mono() - self.last_sync, 3)
+            return {"users": len(s["users"]), "devices_by_status": by_dev, "files": len(s["files"]),
+                    "files_needing_rotation": sum(1 for f in s["files"].values() if f["needs_rotation"]),
+                    "audit_entries": len(ents), "audit_events": dict(counts),
+                    "read_only": self.read_only, "lease_age_s": lease_age}
 
     # ------------------------------------------------------- replication (cluster)
 

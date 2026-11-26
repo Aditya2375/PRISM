@@ -113,6 +113,9 @@ def main(argv: list[str] | None = None) -> int:
         except FileExistsError:
             print("refused: the output file already exists (pass --force to replace it)", file=sys.stderr)
             return 2
+        except OSError as e:
+            print(f"refused: cannot read or write a file: {e.strerror or e}", file=sys.stderr)
+            return 2
         return 0
     if a.op == "doctor":
         from .doctor import run
