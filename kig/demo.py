@@ -101,6 +101,7 @@ def _story(tmp: str, svc: GuardService, admin: Client, ravi: Client) -> bool:
         print(f"   node-c cut off from the primary: lost device inside the {LEASE_S:.0f} s lease -> {inside}; "
               f"after the lease every request -> {after}")
         good = good and after == "node_stale"
+        cl.bus.drain()                    # let delayed pushes finish before the temporary directory goes away
         print("   (nodes run in one process here; the timings measure the replication logic, not a real network)")
 
     step(7, "Tampering: a stored ciphertext is changed on disk, and an audit line is edited")
