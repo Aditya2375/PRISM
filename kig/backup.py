@@ -56,6 +56,13 @@ def _ctx(manifest: dict[str, Any]) -> bytes:
     return b"kig/v1/backup|" + c.sha256_hex(c.canonical(manifest)).encode()
 
 
+def _generation(d: str | Path) -> int:
+    try:
+        return int(json.loads((Path(d) / "state.json").read_text()).get("restore_generation", 0))
+    except (OSError, ValueError, AttributeError):
+        return 0
+
+
 def _counter(d: str | Path) -> int:
     """Highest counter a data directory remembers: its signed-state value or the plain file."""
     best = 0
@@ -248,13 +255,16 @@ def restore(path: str | Path, dest_dir: str | Path, backup_pub: bytes, backup_se
         if entries:
             last = entries[-1]
             _atomic_write(part / "audit.head", json.dumps({"seq": last["seq"], "hash": last["hash"], "sig": last["sig"]}).encode())
-        if accepted:
-            from .audit import AuditLog
-            alog = AuditLog(part / "audit.jsonl", key_sec, service_pub)
-            alog.append(time.time(), "restore.rollback_accepted", "operator",
-                        {"unchecked": accepted, "backup_counter": counter, "known_counter": known})
-            entries = alog.entries
-            st["applied"], st["audit_head"] = len(entries), alog.head
+        # every restore is recorded and bumps the restore generation replicas compare snapshots by
+        gen = max(int(st.get("restore_generation", 0)),
+                  _generation(live_dir) if live_dir else 0) + 1
+        st["restore_generation"] = gen
+        from .audit import AuditLog
+        alog = AuditLog(part / "audit.jsonl", key_sec, service_pub)
+        alog.append(time.time(), "restore.completed", "operator",
+                    {"unchecked": accepted, "backup_counter": counter, "known_counter": known, "generation": gen})
+        entries = alog.entries
+        st["applied"], st["audit_head"] = len(entries), alog.head
         _atomic_write(part / "server_sign.pub", service_pub, 0o644)
         _atomic_write(part / "server_sign.key", key_raw, 0o600)
         for h, b64 in payload["blobs"].items():

@@ -35,6 +35,7 @@ DEVICE_RATE_PER_MIN = 240          # authenticated requests per device per minut
 SOURCE_FAIL_PER_MIN = 1200         # failed (unauthenticated) requests per source address per minute
 UNAUTH_LOG_PER_SOURCE_MIN = 3      # signed audit lines for unauthenticated failures, per source per minute
 UNAUTH_LOG_TOTAL_MIN = 30          # ... and in total per minute; the rest are counted and summarised
+POST_AUTH_EXTRA_LOG_MIN = 300      # after a valid signature: the first line per device+class is always logged, extras share this
 MUTATING_TYPES = {"user.created", "role.changed", "device.enrolled", "file.created", "service.bootstrapped"}
 ROLES = ("admin", "member")
 ID_CHARS = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_.")
@@ -99,11 +100,13 @@ class GuardService:
         # replica bookkeeping is persisted inside the signed state so a restart cannot be used to roll it back
         self.epoch_floor: dict[str, tuple[int, float]] = {k: (v[0], v[1]) for k, v in rep_state.get("epoch_floor", {}).items()}
         self.snapshot_version: int = int(rep_state.get("snapshot_version", -1))
+        self.snapshot_generation: int = int(rep_state.get("snapshot_generation", 0))
         self.nonces: dict[str, tuple[float, str, str]] = {}   # nonce key -> (first seen, source, body hash)
         self._src = "local"
         self._ua_minute = -1
         self._ua_src: dict[str, int] = {}
         self._ua_total = 0
+        self._ua_post = 0
         self._ua_suppressed = 0
         self._rate: dict[str, tuple[int, int]] = {}
         # Nonces are memory-only, so refuse anything signed before this process started.
@@ -229,6 +232,7 @@ class GuardService:
     def _persist(self) -> None:
         if self.read_only:
             self.state["_replica"] = {"snapshot_version": self.snapshot_version,
+                                      "snapshot_generation": self.snapshot_generation,
                                       "epoch_floor": {k: list(v) for k, v in self.epoch_floor.items()}}
         self.state["applied"] = len(self.audit.entries)
         self.state["audit_head"] = self.audit.head
@@ -366,6 +370,7 @@ class GuardService:
                        "note": "failed, limited or retried requests beyond the per-minute logging budget"})
             self._persist()
         self._ua_minute, self._ua_src, self._ua_total, self._ua_suppressed = minute, {}, 0, 0
+        self._ua_post = 0
         self._rate = {k: v for k, v in self._rate.items() if v[0] == minute}
 
     def _rate_hit(self, key: str, limit: int, now: float) -> bool:
@@ -391,10 +396,17 @@ class GuardService:
         k = f"{cls}|{key}"
         n = self._ua_src.get(k, 0)
         over_src = pre_auth and self._rate_hit(f"srcfail:{self._src}", SOURCE_FAIL_PER_MIN, self.clock())
-        if n < UNAUTH_LOG_PER_SOURCE_MIN and (not pre_auth or self._ua_total < UNAUTH_LOG_TOTAL_MIN):
+        if pre_auth:
+            allowed = n < UNAUTH_LOG_PER_SOURCE_MIN and self._ua_total < UNAUTH_LOG_TOTAL_MIN
+        else:
+            # the first line per device and class is never crowded out; extras share a global cap
+            allowed = n == 0 or (n < UNAUTH_LOG_PER_SOURCE_MIN and self._ua_post < POST_AUTH_EXTRA_LOG_MIN)
+        if allowed:
             self._ua_src[k] = n + 1
             if pre_auth:
                 self._ua_total += 1
+            elif n > 0:
+                self._ua_post += 1
             self._log(etype, actor, dict(data, source=self._src))
             self._persist()     # keep state.applied current so tail truncation is caught
         else:
@@ -871,7 +883,7 @@ class GuardService:
         with self._lock:
             blobs = {h: self._load_blob(h) for h in self.blob_hashes() - set(have)}
             body = {"state": json.loads(json.dumps(self.state)), "version": len(self.audit.entries),
-                    "blobs": blobs}
+                    "generation": int(self.state.get("restore_generation", 0)), "blobs": blobs}
             return {"body": body, "sig": c.b64e(c.sign(self._sec, "snapshot", c.canonical(body)))}
 
     def install_snapshot(self, snap: dict[str, Any], primary_pub: bytes) -> bool:
@@ -883,6 +895,9 @@ class GuardService:
             try:
                 ok = c.verify(primary_pub, "snapshot", c.canonical(snap["body"]), c.b64d(snap["sig"]))
                 version = snap["body"]["version"]
+                generation = snap["body"].get("generation", 0)
+                if isinstance(generation, bool) or not isinstance(generation, int):
+                    raise ValueError
                 new_state = json.loads(json.dumps(snap["body"]["state"]))
                 blobs = snap["body"].get("blobs", {})
                 if not isinstance(blobs, dict) or isinstance(version, bool) or not isinstance(version, int):
@@ -891,8 +906,8 @@ class GuardService:
                 raise Denied("bad_snapshot", "malformed snapshot", 400) from None
             if not ok:
                 raise Denied("bad_signature", "snapshot signature invalid", 400)
-            if version <= self.snapshot_version:
-                return False
+            if (generation, version) <= (self.snapshot_generation, self.snapshot_version):
+                return False   # (restore generation, audit length) must strictly advance
             new_hashes = set()
             for f in new_state.get("files", {}).values():
                 new_hashes.add(f["ct"])
@@ -909,13 +924,13 @@ class GuardService:
             # validated: now write blobs and swap
             for raw in staged.values():
                 self._store_blob(raw)
-            old_state, old_ver = self.state, self.snapshot_version
-            self.state, self.snapshot_version = new_state, version
+            old_state, old_ver, old_gen = self.state, self.snapshot_version, self.snapshot_generation
+            self.state, self.snapshot_version, self.snapshot_generation = new_state, version, generation
             try:
                 self._enforce_revoked()
                 self._persist()
             except BaseException:
-                self.state, self.snapshot_version = old_state, old_ver
+                self.state, self.snapshot_version, self.snapshot_generation = old_state, old_ver, old_gen
                 raise
             return True
 
