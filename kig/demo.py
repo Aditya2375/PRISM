@@ -82,6 +82,25 @@ def _story(tmp: str, svc: GuardService, admin: Client, ravi: Client) -> bool:
         for name in sorted(t):
             print(f"   {name}: rejects the lost phone {t[name] * 1000:6.1f} ms after the primary acknowledged")
         good = good and max(t.values()) < 1.0
+        from .cluster import LEASE_S
+        cadmin.put_file("doc", b"x", acl=["asha"])
+        cl.bus.drain(); cl.sync_all()
+        spare = Device.generate("asha-spare", "asha")
+        cadmin.call("enroll_device", **spare.public_args()); cl.bus.drain(); cl.sync_all()
+        cl.bus.partitioned.add("node-c")
+        cadmin.call("report_lost", device="asha-spare", reason="stolen")
+        try:
+            cl.client(spare, "node-c").call("whoami"); inside = "served"
+        except Denied as e:
+            inside = e.code
+        cl.skew = LEASE_S + 1
+        try:
+            cl.client(boss, "node-c").call("whoami"); after = "served"
+        except Denied as e:
+            after = e.code
+        print(f"   node-c cut off from the primary: lost device inside the {LEASE_S:.0f} s lease -> {inside}; "
+              f"after the lease every request -> {after}")
+        good = good and after == "node_stale"
         print("   (nodes run in one process here; the timings measure the replication logic, not a real network)")
 
     step(7, "Tampering: a stored ciphertext is changed on disk, and an audit line is edited")
@@ -124,8 +143,8 @@ def _story(tmp: str, svc: GuardService, admin: Client, ravi: Client) -> bool:
 
     step(9, "Claim to evidence")
     rows = [
-        ("Lost device is cut off at once", "step 3: validly signed request denied, no key released"),
-        ("Revocation reaches every node quickly", "step 6: all three nodes reject the phone, timings printed"),
+        ("Lost device is cut off on the primary at once", "step 3: validly signed request denied, no key released"),
+        ("Revocation reaches every reachable node in tens of ms", "step 6: simulated nodes, timings printed; a node cut off from the primary refuses everyone after 5 s"),
         ("Revocation is visible and explained", "step 5: alert R1 with the two audit entries as evidence"),
         ("A changed stored ciphertext is detected", "step 7: the one altered ciphertext is refused on read and doctor FAILs"),
         ("An edited audit line is detected", "step 7: one edited line on disk makes doctor FAIL"),

@@ -10,10 +10,19 @@ This is a simulation of the replication logic. It is not a deployment, and the t
 2. It signs a certificate (`kind: revoke`, device, audit seq) and pushes it to each replica. A replica verifies the
    signature, adds the device to its own `revoked.log`, and rejects the device from then on.
 3. A replica also pulls on every request while it can reach the primary: a signed snapshot plus all certificates.
-4. If a replica cannot reach the primary and its last successful sync is older than `LEASE_S` (5 s), it refuses
-   every request with `node_stale`. It fails closed. A restarted replica has no last-sync time, so it also fails
-   closed until it has pulled.
-5. A replica never removes a device from its revoked set. Installing a snapshot, replaying a certificate, restarting
+4. The lease lives in the replica (`GuardService.handle`, `lease_s`), not in the test harness. If a replica has not
+   confirmed it is current within `LEASE_S` (5 s), it refuses every request with `node_stale`. It fails closed. A
+   fresh or restarted replica has no sync time, so it also refuses everyone until its first successful sync.
+   `LEASE_S` is a choice between availability during a short outage and the worst-case exposure; lowering it
+   shortens the exposure and makes more outages visible to users.
+   The latency claim, precisely: a revocation reaches every reachable replica in tens of milliseconds (simulated, one
+   process). A replica cut off from the primary can still serve a revoked device for up to `LEASE_S`.
+5. Cost: a pull sends a snapshot only if the primary is ahead of the node, and only certificates after the node's last
+   applied sequence. Each certificate is signed once, when first needed, and cached by audit sequence. Replica reads
+   no longer re-sign history, so their cost does not grow with the number of rotations. Replicas do not add read
+   throughput in this single-process simulation. Each node keeps its own audit log (a replica writes its own
+   `access.granted` entries).
+6. A replica never removes a device from its revoked set. Installing a snapshot, replaying a certificate, restarting
    or restoring an old directory copy cannot shrink it (the set is only ever unioned, and a pull restores it).
 
 ## Attacks and the result

@@ -58,14 +58,16 @@ class Cluster:
     def __init__(self, base_dir: str | Path, replicas: tuple[str, ...] = ("node-b", "node-c"),
                  clock: Callable[[], float] = time.time, bus: Bus | None = None):
         base = Path(base_dir)
-        self.clock = clock
+        self._base_clock = clock
+        self.skew = 0.0                       # tests move every node's clock together by changing this
+        self.clock = lambda: self._base_clock() + self.skew
         self.bus = bus or Bus()
-        self.primary = GuardService(base / "node-a", clock=clock, name="node-a")
+        self.primary = GuardService(base / "node-a", clock=self.clock, name="node-a")
         self.nodes: dict[str, GuardService] = {
-            r: GuardService(base / r, clock=clock, name=r, read_only=True) for r in replicas
+            r: GuardService(base / r, clock=self.clock, name=r, read_only=True, lease_s=LEASE_S) for r in replicas
         }
         self.enforced_at: dict[tuple[str, str], float] = {}
-        self.last_sync: dict[str, float] = {}
+        self.cert_seq: dict[str, int] = {}    # per replica: highest certificate sequence already applied
         self.sync_all()
 
     @property
@@ -77,12 +79,10 @@ class Cluster:
             return self.primary.handle
 
         def handle(env: dict[str, Any], source: str = "local") -> dict[str, Any]:
-            # Pull on every request. If the primary cannot be reached and the last
-            # successful sync is older than the lease, fail closed.
+            # Pull on every request while the primary is reachable. The lease itself is enforced by the node:
+            # if it cannot confirm it is current, it refuses everyone.
             if node not in self.bus.partitioned:
                 self.pull(node)
-            elif self.clock() - self.last_sync.get(node, 0.0) > LEASE_S:
-                raise Denied("node_stale", "replica cannot confirm revocation state; failing closed", 503)
             return self.nodes[node].handle(env, source)
 
         return handle
@@ -91,8 +91,8 @@ class Cluster:
         """Simulate a replica process restart: state is reloaded from disk and the last-sync time is forgotten,
         so the node fails closed (when partitioned) until it has pulled from the primary again."""
         old = self.nodes[node]
-        self.nodes[node] = GuardService(old.dir, clock=self.clock, name=node, read_only=True)
-        self.last_sync.pop(node, None)
+        self.nodes[node] = GuardService(old.dir, clock=self.clock, name=node, read_only=True, lease_s=LEASE_S)
+        self.cert_seq.pop(node, None)
         return self.nodes[node]
 
     def tick(self) -> None:
@@ -134,12 +134,19 @@ class Cluster:
             self.pull(name)
 
     def pull(self, node: str) -> None:
-        """Catch-up path for a node that missed pushes (partition healed, restart)."""
+        """Catch-up path for a node that missed pushes (partition healed, restart).
+
+        Cheap when nothing changed: the snapshot is built only if the primary is ahead of the node, and only
+        certificates after the node's last applied sequence are sent.
+        """
         n = self.nodes[node]
-        n.install_snapshot(self.primary.export_snapshot(have=n.blob_hashes()), self.primary.pub)
-        for cert in self.primary.all_certs():
+        if (int(n.snapshot_generation), int(n.snapshot_version)) < self.primary.sync_position():
+            n.install_snapshot(self.primary.export_snapshot(have=n.blob_hashes()), self.primary.pub)
+        upto = len(self.primary.audit.entries) - 1
+        for cert in self.primary.all_certs(after_seq=self.cert_seq.get(node, -1)):
             self._apply(node, cert)
-        self.last_sync[node] = self.clock()
+        self.cert_seq[node] = upto
+        n.last_sync = self.clock()
 
     def _apply(self, node: str, cert: dict[str, Any]) -> str:
         r = self.nodes[node].apply_cert(cert, self.primary.pub)

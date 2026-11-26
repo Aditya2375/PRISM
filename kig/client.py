@@ -111,11 +111,11 @@ class Client:
         self.state_path = Path(state_path) if state_path else None
         self.seen_epoch: dict[str, int] = {}   # newest key version this client has seen per file
         self.rotation_errors: list[str] = []   # auto-rotation failures other than a lost race
-        self.pins: dict[str, Any] = {"signers": {}, "owners": {}, "writers": {}}   # first-seen signer keys and file owners
+        self.pins: dict[str, Any] = {"signers": {}, "owners": {}, "writers": {}, "writer_users": {}, "admins": {}}   # first-seen signer keys and file owners
         if self.state_path and Path(str(self.state_path) + ".pins").exists():
             try:
                 self.pins = json.loads(Path(str(self.state_path) + ".pins").read_text())
-                self.pins.setdefault("writers", {}); self.pins["signers"], self.pins["owners"]
+                self.pins.setdefault("writers", {}); self.pins.setdefault("writer_users", {}); self.pins.setdefault("admins", {}); self.pins["signers"], self.pins["owners"]
             except (ValueError, OSError, TypeError, KeyError):
                 raise c.CryptoError("client pin file is damaged; refusing to start without it") from None
         if self.state_path and self.state_path.exists():
@@ -154,6 +154,8 @@ class Client:
         if not c.verify(c.b64d(m["writer_sign_pub"]), "manifest", msg, c.b64d(m["sig"])):
             raise c.CryptoError("manifest signature invalid: acl, owner or version were changed")
         writers = self.pins["writers"].get(file_id, {})
+        if writers:
+            self._check_writer_authority(file_id, m, writers, wuser, owner)
         if writers and m["writer"] not in writers:
             self._check_enrollment(m, writers, wuser)       # a writer never seen for this file needs a proof
         elif m["writer"] in writers and writers[m["writer"]] != m["writer_sign_pub"]:
@@ -162,7 +164,35 @@ class Client:
             self.pins["signers"][m["writer"]] = m["writer_sign_pub"]
             self.pins["owners"][file_id] = owner
             self.pins["writers"].setdefault(file_id, {})[m["writer"]] = m["writer_sign_pub"]
+            self.pins["writer_users"].setdefault(file_id, {})[m["writer"]] = wuser
+            if not writers:
+                self.pins["admins"].setdefault(file_id, [])        # the first writer is the owner (TOFU)
             self._save_pins()
+
+    def _check_writer_authority(self, file_id: str, m: dict[str, Any], writers: dict[str, str], wuser: str,
+                                owner: str) -> None:
+        """Only the file's owner, or an admin proven by a chain of signed requests, may write a version.
+
+        An admin is proven by the `create_user` / `set_role` request (role admin) that the owner, or an admin
+        already proven for this file, signed with a device pinned as a writer of this file.
+        """
+        if wuser == owner or wuser in self.pins["admins"].get(file_id, []):
+            return
+        env = m.get("role_proof")
+        users = self.pins["writer_users"].get(file_id, {})
+        try:
+            body = {k: env[k] for k in ("cmd", "device", "ts", "nonce", "args") + (("aud",) if "aud" in env else ())}
+            signer_user = users.get(body["device"])
+            ok = (body["cmd"] in ("create_user", "set_role") and body["args"]["user"] == wuser
+                  and body["args"].get("role") == "admin" and body["device"] in writers
+                  and (signer_user == owner or signer_user in self.pins["admins"].get(file_id, []))
+                  and c.verify(c.b64d(writers[body["device"]]), "cmd", c.canonical(body), c.b64d(env["sig"])))
+        except (KeyError, TypeError, ValueError, c.CryptoError):
+            ok = False
+        if not ok:
+            raise c.CryptoError(f"writer user {wuser} is neither the file's owner nor an admin proven by a pinned "
+                                "owner or admin")
+        self.pins["admins"].setdefault(file_id, []).append(wuser)
 
     @staticmethod
     def _check_enrollment(m: dict[str, Any], writers: dict[str, str], wuser: str) -> None:

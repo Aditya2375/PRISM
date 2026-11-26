@@ -198,8 +198,11 @@ When the client has a `state_path` (the shipped CLI sets one next to the key fil
 the first writer key and owner it sees for each file are pinned (trust on first use; the enrolment fingerprint is
 the out-of-band check for that key). A later writer for the same file is accepted only with the `enroll_device`
 request that an already pinned writer of that file signed (the service keeps that signed request as the proof).
-Only the owner or an admin can write, and only an admin can enrol, so this chain stays within people who could
-already write. A changed owner, a changed key for a pinned writer, or an unproven new writer is refused.
+A writer is also checked for authority: its user must be the file's owner, or an admin proven by the `create_user` /
+`set_role` request (role admin) that the owner, or an admin already proven, signed with a pinned writer device of
+this file. A member cannot write a version the client will accept. Known limit: the bootstrap admin has no such
+signed request, so a bootstrap admin who is not the file's owner is refused by clients that pinned the owner; the
+owner (or an admin the owner created) has to rotate that file. A changed owner, a changed key for a pinned writer, or an unproven new writer is refused.
 
 What this stops: someone with the service's signing key or write access to its disk, but no device key, cannot add a
 user to a file's ACL, change its owner or key commitment, invent a writer device, or present an older version's

@@ -132,8 +132,7 @@ def test_lagging_replica_after_lease_fails_closed_not_open(tmp_path):
     time.sleep(0.02)
     cl.bus.partitioned.add("node-b")
     _revoke(cl, admin)
-    real = cl.clock
-    cl.clock = lambda: real() + LEASE_S + 1           # time passes while node-b stays cut off
+    cl.skew = LEASE_S + 1                             # time passes while node-b stays cut off
     assert code(cl.client(phone, "node-b").fetch, "report") == "node_stale"
     assert code(cl.client(bob, "node-b").fetch, "report") == "node_stale"
 

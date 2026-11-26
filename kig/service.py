@@ -94,8 +94,11 @@ def hmac_compare(a: str, b: str) -> bool:
 
 class GuardService:
     def __init__(self, data_dir: str | Path, clock: Callable[[], float] = time.time,
-                 name: str = "primary", read_only: bool = False):
+                 name: str = "primary", read_only: bool = False, lease_s: float | None = None):
         self.name = name
+        self.lease_s = lease_s                     # replicas: refuse everything if not confirmed fresh this recently
+        self.last_sync: float | None = None        # when this replica last confirmed it is current with the primary
+        self._cert_cache: dict[int, list[dict[str, Any]]] = {}
         self.read_only = read_only
         self.dir = Path(data_dir)
         self.dir.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -444,6 +447,10 @@ class GuardService:
     def _handle(self, env: dict[str, Any]) -> dict[str, Any]:
         now = self.clock()
         self._roll(now)
+        if self.read_only and self.lease_s is not None and (self.last_sync is None or now - self.last_sync > self.lease_s):
+            # the lease lives in the node: a replica that cannot show it is current refuses everyone (fail closed),
+            # including right after a restart, until its first successful sync
+            raise Denied("node_stale", "replica cannot confirm revocation state; failing closed", 503)
         try:
             cmd, dev_id = env["cmd"], env["device"]
             ts, nonce, args = env["ts"], env["nonce"], env["args"]
@@ -521,7 +528,7 @@ class GuardService:
         if self.read_only and cmd not in READ_ONLY_CMDS:
             raise Denied("read_only", f"node {self.name} is a read-only replica; send writes to the primary", 421)
         try:
-            self._cur_env = {**body, "sig": env["sig"]} if cmd == "enroll_device" else None
+            self._cur_env = {**body, "sig": env["sig"]} if cmd in ("enroll_device", "create_user", "set_role") else None
             result = fn(dev_id, dev["user"], user["role"], args)
             if cmd not in READ_ONLY_CMDS:   # reads change no state; the audit log alone records them
                 self._persist()
@@ -567,6 +574,8 @@ class GuardService:
         if new in self.state["users"]:
             raise Denied("conflict", "user exists", 409)
         self.state["users"][new] = {"role": new_role, "active": True}
+        if new_role == "admin":
+            self.state["users"][new]["role_proof"] = getattr(self, "_cur_env", None)   # the admin's signed request
         self._log("user.created", dev, {"user": new, "role": new_role, "by": user})
         if new_role == "admin":
             self._log("role.changed", dev, {"user": new, "old": None, "new": "admin", "by": user})
@@ -585,6 +594,7 @@ class GuardService:
         ) <= 1:
             raise Denied("conflict", "cannot demote the last admin", 409)
         self.state["users"][target]["role"] = new_role
+        self.state["users"][target]["role_proof"] = getattr(self, "_cur_env", None) if new_role == "admin" else None
         self._log("role.changed", dev, {"user": target, "old": old, "new": new_role, "by": user})
         return {"ok": True}
 
@@ -653,7 +663,7 @@ class GuardService:
         u["active"] = False
         for d in self._devices_of(target):
             self._apply_remove_device(d, "revoked")
-        self._log("user.disabled", dev, {"user": target, "by": user})
+        self._log("user.disabled", dev, {"user": target, "by": user, "devices": sorted(self._devices_of(target))})
         return {"ok": True}
 
     # files ------------------------------------------------------------------
@@ -753,7 +763,8 @@ class GuardService:
             return None
         dev = self.state["devices"].get(m["writer"])
         return {"writer": m["writer"], "sig": m["sig"], "writer_sign_pub": dev["sign_pub"] if dev else "",
-                "writer_user": dev["user"] if dev else "", "enrollment": dev.get("enrolled_proof") if dev else None}
+                "writer_user": dev["user"] if dev else "", "enrollment": dev.get("enrolled_proof") if dev else None,
+                "role_proof": (self.state["users"].get(dev["user"]) or {}).get("role_proof") if dev else None}
 
     def cmd_put_file(self, dev, user, role, args):
         fid = _valid_id(args.get("file_id"))
@@ -918,24 +929,38 @@ class GuardService:
         return {"body": body, "sig": c.b64e(c.sign(self._sec, "cert", c.canonical(body)))}
 
     def certs_from_entries(self, entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        """Signed revocation / epoch certificates for audit entries (push or pull)."""
-        out = []
+        """Signed revocation / epoch certificates for audit entries (push or pull).
+
+        Each entry's certificates are signed once and cached by sequence number, so a pull costs no new signatures.
+        """
+        out: list[dict[str, Any]] = []
         for e in entries:
-            d, t = e["data"], e["type"]
-            if t in ("device.revoked", "device.lost"):
-                out.append(self._cert({"kind": "revoke", "device": d["device"], "seq": e["seq"], "ts": e["ts"]}))
-            elif t == "user.disabled":
-                for dev in self._devices_of(d["user"]):
-                    out.append(self._cert({"kind": "revoke", "device": dev, "seq": e["seq"], "ts": e["ts"]}))
-            elif t == "file.rotated":
-                out.append(self._cert({"kind": "epoch", "file": d["file"], "epoch": d["epoch"],
-                                       "seq": e["seq"], "ts": e["ts"]}))
+            if e["type"] not in ("device.revoked", "device.lost", "user.disabled", "file.rotated"):
+                continue
+            hit = self._cert_cache.get(e["seq"])
+            if hit is None:
+                d, t, certs = e["data"], e["type"], []
+                if t in ("device.revoked", "device.lost"):
+                    certs.append(self._cert({"kind": "revoke", "device": d["device"], "seq": e["seq"], "ts": e["ts"]}))
+                elif t == "user.disabled":
+                    # the devices the user had when it was disabled (older entries fall back to the current list)
+                    for dev in d.get("devices", self._devices_of(d["user"])):
+                        certs.append(self._cert({"kind": "revoke", "device": dev, "seq": e["seq"], "ts": e["ts"]}))
+                else:
+                    certs.append(self._cert({"kind": "epoch", "file": d["file"], "epoch": d["epoch"],
+                                             "seq": e["seq"], "ts": e["ts"]}))
+                self._cert_cache[e["seq"]] = hit = certs
+            out.extend(hit)
         return out
 
-    def all_certs(self) -> list[dict[str, Any]]:
-        """Pull path: everything a node that missed pushes needs to catch up."""
+    def all_certs(self, after_seq: int = -1) -> list[dict[str, Any]]:
+        """Pull path: the certificates a node that missed pushes needs, only those after ``after_seq``."""
         with self._lock:
-            return self.certs_from_entries(self.audit.entries)
+            return self.certs_from_entries([e for e in self.audit.entries[max(after_seq + 1, 0):]])
+
+    def sync_position(self) -> tuple[int, int]:
+        """(restore generation, audit length): what a replica compares to decide whether it needs a new snapshot."""
+        return int(self.state.get("restore_generation", 0)), len(self.audit.entries)
 
     def export_snapshot(self, have: set[str] | frozenset[str] = frozenset()) -> dict[str, Any]:
         """Signed state plus only the ciphertext blobs the caller does not already hold."""

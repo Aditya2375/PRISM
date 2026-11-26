@@ -48,3 +48,30 @@ def test_cli_runs_share_pins_and_epochs(w, tmp_path, monkeypatch, capsys):
     # a second run, as a new process would, refuses a changed owner
     w.svc.state["files"]["cli-doc"]["owner"] = "mallory"
     assert cli.main(["get", "--url", "x", "--key", str(key), "--file-id", "cli-doc", "--out", str(out)]) == 3
+
+
+def test_admin_proven_by_the_owner_may_write_but_a_member_may_not(w):
+    w.admin.fetch("report", auto_rotate=False)                       # pins alice-laptop (the owner's device)
+    w.admin.call("create_user", user="carol", role="admin")
+    carol = Device.generate("carol-laptop", "carol")
+    w.admin.call("enroll_device", **carol.public_args())
+    w.clock.tick(1)
+    w.admin.call("report_lost", device="alice-phone", reason="x")    # something that needs a rotation by carol
+    w.admin.rotate("report", acl=["alice", "bob", "carol"])
+    cc = Client(carol, w.svc.handle, w.clock)
+    cc.fetch("report", auto_rotate=False)
+    cc.rotate("report")                                              # carol writes a version
+    assert w.admin.fetch("report", auto_rotate=False)                # alice's client accepts: owner created carol admin
+    assert "carol" in w.admin.pins["admins"]["report"]
+
+
+def test_member_writer_without_admin_proof_is_refused(w):
+    w.admin.fetch("report", auto_rotate=False)
+    f = w.svc.state["files"]["report"]
+    acl = sorted(set(f["acl"]) | {"mallory"})
+    sig = c.sign(w.bob_laptop.sign_sec, "manifest",
+                 manifest_msg("report", f["epoch"], acl, f["owner"], f["commit"], "bob-laptop", "bob"))
+    f["acl"] = acl; f["manifest"] = {"writer": "bob-laptop", "sig": c.b64e(sig)}
+    # bob's device was enrolled by alice's device, so the enrolment proof is valid; his authority is what is missing
+    with pytest.raises(c.CryptoError, match="neither the file's owner nor an admin"):
+        w.admin.fetch("report", auto_rotate=False)
