@@ -61,18 +61,29 @@ def test_state_file_rollback_cannot_resurrect_a_revoked_device(w, tmp_path):
     assert "alice-phone" not in svc2.state["files"]["report"]["wraps"]
 
 
-def test_revoked_set_wins_even_with_state_and_audit_lost(w, tmp_path):
-    w.admin.call("revoke_device", device="alice-phone")
-    # keep revoked.log but restore an old state and the audit up to before the revoke
+def test_tampered_state_file_is_refused_not_used(w, tmp_path):
+    from kig.service import StateCorrupt
     d = tmp_path / "data"
-    lines = (d / "audit.jsonl").read_text().splitlines()
-    n = next(i for i, l in enumerate(lines) if json.loads(l)["type"] == "device.revoked")
-    (d / "audit.jsonl").write_text("\n".join(lines[:n]) + "\n")
     st = json.loads((d / "state.json").read_text())
     st["devices"]["alice-phone"]["status"] = "active"
-    st["applied"] = n
-    st["audit_head"] = json.loads(lines[n - 1])["hash"]
+    st["devices"]["alice-phone"]["status"] = "active"
+    st["users"]["bob"]["role"] = "admin"                       # privilege edit on disk
     (d / "state.json").write_text(json.dumps(st))
+    with pytest.raises(StateCorrupt):
+        restart(w, tmp_path)
+    (d / "state.json").write_text("{not json")
+    with pytest.raises(StateCorrupt):
+        restart(w, tmp_path)
+
+
+def test_revoked_set_is_enforced_when_state_is_restored_from_old_signed_copy(w, tmp_path):
+    d = tmp_path / "data"
+    old = (d / "state.json").read_text()                        # valid, signed, but before the revoke
+    w.admin.call("revoke_device", device="alice-phone")
+    (d / "state.json").write_text(old)
+    lines = (d / "audit.jsonl").read_text().splitlines()
+    n = next(i for i, l in enumerate(lines) if json.loads(l)["type"] == "device.revoked")
+    (d / "audit.jsonl").write_text("\n".join(lines[:n]) + "\n")   # audit also rolled back
     svc2 = restart(w, tmp_path)
     assert svc2.state["devices"]["alice-phone"]["status"] != "active"
 

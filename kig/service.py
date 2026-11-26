@@ -36,6 +36,10 @@ class SimulatedCrash(BaseException):
     """Raised by fault-injection hooks in tests and the red-team harness to model a process kill."""
 
 
+class StateCorrupt(Exception):
+    """state.json is unreadable or failed its integrity signature; restore from a verified backup."""
+
+
 class Denied(Exception):
     def __init__(self, code: str, reason: str, status: int = 403):
         super().__init__(reason)
@@ -146,7 +150,14 @@ class GuardService:
     def _load_state(self) -> dict[str, Any]:
         p = self.dir / "state.json"
         if p.exists():
-            return json.loads(p.read_text())
+            try:
+                st = json.loads(p.read_text())
+                sig = c.b64d(st.pop("_sig"))
+            except Exception:  # noqa: BLE001
+                raise StateCorrupt("state.json is unreadable or unsigned; restore from a verified backup") from None
+            if not c.verify(self.pub, "state", c.canonical(st), sig):
+                raise StateCorrupt("state.json failed its integrity signature; restore from a verified backup")
+            return st
         return {"users": {}, "devices": {}, "files": {}, "applied": 0}
 
     def _check_not_truncated(self) -> None:
@@ -159,7 +170,9 @@ class GuardService:
     def _persist(self) -> None:
         self.state["applied"] = len(self.audit.entries)
         self.state["audit_head"] = self.audit.head
-        _atomic_write(self.dir / "state.json", json.dumps(self.state, sort_keys=True).encode(),
+        body = dict(self.state)
+        body["_sig"] = c.b64e(c.sign(self._sec, "state", c.canonical(self.state)))
+        _atomic_write(self.dir / "state.json", json.dumps(body, sort_keys=True).encode(),
                       hook=lambda: self._crash("before_state_rename"))
 
     def _replay_detector(self) -> None:
