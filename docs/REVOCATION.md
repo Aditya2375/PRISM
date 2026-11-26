@@ -15,8 +15,8 @@ This is a simulation of the replication logic. It is not a deployment, and the t
    fresh or restarted replica has no sync time, so it also refuses everyone until its first successful sync.
    `LEASE_S` is a choice between availability during a short outage and the worst-case exposure; lowering it
    shortens the exposure and makes more outages visible to users.
-   The latency claim, precisely: a revocation reaches every reachable replica in tens of milliseconds (simulated, one
-   process). A replica cut off from the primary can still serve a revoked device for up to `LEASE_S`.
+   The latency claim, precisely: a revocation reaches every reachable replica within the network delay we inject (5 to 50 ms, simulated, one
+   process); the delay dominates the printed times, our processing is small. Real networks will differ. A replica cut off from the primary can still serve a revoked device for up to `LEASE_S`.
 5. Cost: a pull sends a snapshot only if the primary is ahead of the node, and only certificates after the node's last
    applied sequence. Each certificate is signed once, when first needed, and cached by audit sequence. Replica reads
    no longer re-sign history, so their cost does not grow with the number of rotations. Replicas do not add read

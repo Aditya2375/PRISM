@@ -35,7 +35,8 @@ def test_audit_log_ok_then_each_tamper_fails(w, tmp_path):
     assert run("audit", "--log", short, "--pub", d / "server_sign.pub", "--anchor", d / "audit.head")[0] == 1
     swapped = tmp_path / "swap.jsonl"; swapped.write_text("\n".join(lines[:2] + [lines[3], lines[2]] + lines[4:]) + "\n")
     assert run("audit", "--log", swapped, "--pub", d / "server_sign.pub", "--anchor", d / "audit.head")[0] == 1
-    assert run("audit", "--log", d / "audit.jsonl", "--pub", d / "server_sign.pub")[0] == 1   # no anchor: refuses
+    rc, out = run("audit", "--log", d / "audit.jsonl", "--pub", d / "server_sign.pub")   # no anchor, no head
+    assert rc == 0 and "completeness NOT established" in out
 
 
 def test_wrong_service_key_fails(w, tmp_path):

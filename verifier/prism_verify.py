@@ -59,6 +59,8 @@ def verify_audit(lines: list[bytes], pub: bytes, anchor: dict | None, expect_hea
             return False, f"line {n + 1} is not JSON"
     prev = GENESIS
     for i, e in enumerate(entries):
+        if not isinstance(e, dict) or set(e) != {"seq", "ts", "prev", "type", "actor", "data", "hash", "sig"}:
+            return False, f"entry {i} is malformed or carries fields that are not covered by the signature"
         try:
             body = {k: e[k] for k in ("seq", "ts", "prev", "type", "actor", "data")}
         except (KeyError, TypeError):
@@ -73,19 +75,25 @@ def verify_audit(lines: list[bytes], pub: bytes, anchor: dict | None, expect_hea
         if not sig_ok(pub, "audit", h.encode("ascii"), e.get("sig", "")):
             return False, f"entry {i}: bad signature"
         prev = h
+    if not entries:
+        return False, "the log is empty: nothing to verify, and an emptied log cannot be told from a new one"
     if anchor is not None:
-        n = anchor.get("seq", -1) + 1 if isinstance(anchor.get("seq"), int) else -1
-        if n < 0 or len(entries) < n:
-            return False, f"log is shorter than its head anchor ({len(entries)} entries, anchor covers {n})"
-        if n and (entries[n - 1]["hash"] != anchor.get("hash")
-                  or not sig_ok(pub, "audit", anchor["hash"].encode("ascii"), anchor.get("sig", ""))):
+        sq, ah = anchor.get("seq"), anchor.get("hash")
+        if not isinstance(sq, int) or isinstance(sq, bool) or sq < 0 or not isinstance(ah, str):
+            return False, "head anchor is malformed"
+        if len(entries) <= sq:
+            return False, f"log is shorter than its head anchor ({len(entries)} entries, anchor at seq {sq})"
+        if entries[sq]["hash"] != ah or not sig_ok(pub, "audit", ah.encode("ascii"), str(anchor.get("sig", ""))):
             return False, "head anchor does not match the log"
-    elif entries:
-        return False, "no head anchor given, so tail removal cannot be excluded (pass --anchor)"
     if expect_head is not None and prev != expect_head:
         return False, "log ends at a different head than the one you recorded"
-    return True, f"{len(entries)} entries, chain and signatures verify, head {prev[:16]}" + (
-        ", head matches the recorded one" if expect_head else "")
+    msg = f"{len(entries)} entries, chain and signatures verify, head {prev}"
+    if expect_head:
+        return True, msg + ", head matches the one you recorded: tail removal is excluded"
+    return True, msg + ("\nNOTE audit: completeness NOT established. An anchor stored beside the log is not independent; "
+                        "entries could have been removed from the end. Compare the head above with one recorded "
+                        "elsewhere, or pass --expect-head." + (" (anchor was read and matches)" if anchor else
+                        " (no anchor given)"))
 
 
 def verify_backup(path: str, pub: bytes) -> tuple[bool, str]:
@@ -94,6 +102,9 @@ def verify_backup(path: str, pub: bytes) -> tuple[bool, str]:
     except (tarfile.TarError, OSError) as e:
         return False, f"not a readable archive: {e}"
     with tf:
+        names = [m.name for m in tf]
+        if len(names) != len(set(names)):
+            return False, "archive contains duplicate member names"
         members = {m.name: m for m in tf if m.isfile()}
         bad = [m.name for m in tf if not m.isfile() or not (m.name in ("manifest.json", "meta.sealed.json")
                                                           or re.fullmatch(r"blobs/[0-9a-f]{64}", m.name))]
@@ -140,7 +151,8 @@ def verify_state(path: str, pub: bytes) -> tuple[bool, str]:
     if not sig_ok(pub, "state", canonical(st), sig):
         return False, "state signature is not valid for this service key"
     w = st.get("_wal", {})
-    return True, f"signed snapshot, journal id {str(w.get('id'))[:8]}, seq {w.get('seq')}"
+    return True, (f"signed snapshot, journal id {str(w.get('id'))[:8]}, seq {w.get('seq')}\nNOTE state: the journal "
+                  "after the snapshot is NOT checked here, and an older signed snapshot also passes (rollback).")
 
 
 def main(argv=None) -> int:

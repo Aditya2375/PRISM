@@ -57,11 +57,11 @@ python -m pytest -q            # the full suite
 
 ## Design in one paragraph
 
-Each device holds an ML-DSA-65 signing key and a hybrid ML-KEM-768 + X25519 key. A file is encrypted on the client with a random AES-256-GCM key (the DEK). The DEK is wrapped separately for each eligible device with the hybrid KEM. The service stores ciphertext and wrapped keys only, never a DEK. Every request is a device-signed envelope with timestamp and nonce. Revoking a device takes effect on the primary at once (replicas follow in tens of milliseconds, with a 5 s bound for a cut-off replica, see `docs/REVOCATION.md`), removes its wrapped keys and flags files for rotation, and the next authorised read re-encrypts under a fresh DEK and epoch. See `THREAT_MODEL.md` for assets, attackers, assumptions and limits.
+Each device holds an ML-DSA-65 signing key and a hybrid ML-KEM-768 + X25519 key. A file is encrypted on the client with a random AES-256-GCM key (the DEK). The DEK is wrapped separately for each eligible device with the hybrid KEM. The service stores ciphertext and wrapped keys only, never a DEK. Every request is a device-signed envelope with timestamp and nonce. Revoking a device takes effect on the primary at once (in the in-process simulation replicas follow within the injected 5 to 50 ms network delay; a cut-off replica is bounded by a 5 s lease; see `docs/REVOCATION.md`), removes its wrapped keys and flags files for rotation, and the next authorised read re-encrypts under a fresh DEK and epoch. See `THREAT_MODEL.md` for assets, attackers, assumptions and limits.
 
 ## Clean-machine setup
 
-Python 3.10 or newer (tested on 3.10, 3.12 and 3.13).
+Python 3.10 or newer (CI runs 3.12 and 3.13; the suite is also run locally on 3.10).
 
 ```bash
 git clone https://github.com/Aditya2375/PRISM.git
@@ -83,7 +83,8 @@ Create the first admin (once), enrol more devices, call commands:
 ```bash
 python -m kig.cli init --data ./data --user asha --device asha-laptop --out asha-laptop.json
 python -m kig.cli keygen --user asha --device asha-phone --out asha-phone.json > phone-pub.json
-python -m kig.cli call --url http://127.0.0.1:8443 --key asha-laptop.json enroll_device "$(cat phone-pub.json)"
+# keygen prints a fingerprint on stderr: read it from the new device, compare it, then enrol:
+python -m kig.cli enroll --url http://127.0.0.1:8443 --key asha-laptop.json --pub phone-pub.json --expect-fingerprint <fingerprint>
 ```
 
 First start creates `data/server_sign.key`, `data/operator.token` (both mode 0600) and the audit log. Operator reads need header `X-KIG-Operator-Token`. Nothing secret is stored in the repository.
@@ -130,6 +131,7 @@ kig/detect.py    explainable rules
 kig/service.py   identity directory, access decisions, revocation, recovery
 kig/client.py    device-side crypto and request signing
 kig/api.py       FastAPI app
+kig/server.py    app factory used by uvicorn (`kig.server:app`)
 tests/           pytest suite
 ```
 

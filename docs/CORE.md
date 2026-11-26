@@ -225,7 +225,7 @@ python verifier/prism_verify.py backup --file x.bak --pub data/server_sign.pub
 python verifier/prism_verify.py state  --file data/state.json --pub data/server_sign.pub
 ```
 
-`audit` re-derives every entry hash and checks every signature, the links, the sequence and the head anchor, and
+`audit` rejects entries with fields outside the signed set, rejects an empty log, and re-derives every entry hash and checks every signature, the links, the sequence and the head anchor, and
 refuses to pass without an anchor. `backup` checks the manifest signature, the signed blob list and every blob's
 hash, without the backup key (it does not open the sealed metadata). `state` checks the signed snapshot. It does not
 check that the journal after the snapshot is complete (the service does that at start-up). Tail removal can only be
@@ -240,3 +240,8 @@ and only the wrapping key is split, with PyCryptodome's Shamir (`Crypto.Protocol
 `requirements.txt`). Shares from different splits, duplicates, corrupt shares and too few shares are refused.
 Limits: the sealed secret is repeated in every share; there is no verifiable sharing, so a corrupt share shows up
 only as a failed combine; and PyCryptodome's Shamir is a library we use, not one we audited.
+
+Audit result wording: without `--expect-head` the verifier still prints a second line saying completeness is NOT
+established (an anchor beside the log is not independent, and entries could have been removed from the end). With a head
+you recorded elsewhere, tail removal is excluded. The `state` check says the journal is not checked and that an older
+signed snapshot also passes (rollback). `backup` rejects archives with duplicate member names.

@@ -145,7 +145,7 @@ def _story(tmp: str, svc: GuardService, admin: Client, ravi: Client) -> bool:
     step(9, "Claim to evidence")
     rows = [
         ("Lost device is cut off on the primary at once", "step 3: validly signed request denied, no key released"),
-        ("Revocation reaches every reachable node in tens of ms", "step 6: simulated nodes, timings printed; a node cut off from the primary refuses everyone after 5 s"),
+        ("Revocation reaches every reachable node within the simulated 5 to 50 ms network delay", "step 6: simulated nodes, timings printed; a node cut off from the primary refuses everyone after 5 s"),
         ("Revocation is visible and explained", "step 5: alert R1 with the two audit entries as evidence"),
         ("A changed stored ciphertext is detected", "step 7: the one altered ciphertext is refused on read and doctor FAILs"),
         ("An edited audit line is detected", "step 7: one edited line on disk makes doctor FAIL"),

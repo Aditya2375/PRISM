@@ -16,7 +16,7 @@
 ## Controls
 | Threat | Control |
 | --- | --- |
-| Lost device keeps working | `report_lost` and `revoke_device` take effect on the primary at once and reach every reachable replica in tens of milliseconds (simulated). A replica cut off from the primary can serve for at most 5 s (`LEASE_S`, a deliberate availability choice) and then refuses everyone. Denied requests raise R1. See docs/REVOCATION.md |
+| Lost device keeps working | `report_lost` and `revoke_device` take effect on the primary at once and reach every reachable replica within the injected 5 to 50 ms delay of the simulation (our own processing adds little; real networks will differ). A replica cut off from the primary can serve for at most 5 s (`LEASE_S`, a deliberate availability choice) and then refuses everyone. Denied requests raise R1. See docs/REVOCATION.md |
 | Old key still decrypts new data | next authorised read rotates to a fresh DEK and epoch; wraps are bound to file, device and epoch |
 | Replay and forgery | signature over the whole envelope, 30 s freshness window, per-device nonce, refusal of requests signed before a restart |
 | Lockout abuse (DoS by claiming a victim's id) | there are no lockouts: failed authentication raises an alert and is log-bounded, so an attacker cannot lock a victim out, and a client retrying its own envelope is not penalised |
