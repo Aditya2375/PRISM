@@ -30,6 +30,7 @@ from typing import Any, Callable
 from . import crypto as c
 from .client import Client, Device
 from .cluster import LEASE_S
+from .node import OPENER
 from .service import Denied
 
 NODES = ("node-a", "node-b", "node-c")
@@ -108,6 +109,9 @@ class Relay:
                         s.shutdown(socket.SHUT_RDWR)
                     except OSError:
                         pass
+                    s.close()                      # a relay must not leak a descriptor per connection
+                    with self._lock:
+                        self._conns.discard(s)
 
         threading.Thread(target=pipe, args=(cs, ts), daemon=True).start()
         threading.Thread(target=pipe, args=(ts, cs), daemon=True).start()
@@ -123,7 +127,8 @@ class NetCluster:
     """Three kig.node processes. Clients talk to each node directly. Node to node traffic goes through relays."""
 
     def __init__(self, base_dir: str | Path, boss: Device, delay_s: float = 0.0, lease_s: float = LEASE_S,
-                 pull_interval: float = 0.25, pinned_pub: dict[str, Path] | None = None):
+                 pull_interval: float = 0.25, pinned_pub: dict[str, Path] | None = None, cert_page: int = 200):
+        self.cert_page = cert_page
         self.pinned_pub = pinned_pub or {}         # tests: node -> a different "primary public key" file to pin
         self.spawn_extra: dict[str, list[str]] = {}
         self.base = Path(base_dir)
@@ -132,8 +137,9 @@ class NetCluster:
         self.lease_s, self.pull_interval = lease_s, pull_interval
         self.token = secrets.token_urlsafe(32)
         self.token_file = self.base / "cluster.token"
-        self.token_file.write_text(self.token)
-        self.token_file.chmod(0o600)
+        fd = os.open(self.token_file, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)   # never readable by others, even briefly
+        with os.fdopen(fd, "w") as f:
+            f.write(self.token)
         self.ports = {n: _free_port() for n in NODES}
         self.url = {n: f"http://127.0.0.1:{p}" for n, p in self.ports.items()}
         self.procs: dict[str, subprocess.Popen] = {}
@@ -194,7 +200,7 @@ class NetCluster:
         self.procs[name] = subprocess.Popen(
             [sys.executable, "-m", "kig.node", "--name", name, "--data", str(self.base / name), "--port",
              str(self.ports[name]), "--cluster-token-file", str(self.token_file),
-             "--pull-interval", str(self.pull_interval), *extra],
+             "--pull-interval", str(self.pull_interval), "--cert-page", str(self.cert_page), *extra],
             stdout=log, stderr=log, env=env)
 
     def _wait_ready(self, name: str, timeout: float = 30.0) -> None:
@@ -203,7 +209,7 @@ class NetCluster:
             if self.procs[name].poll() is not None:
                 raise RuntimeError(f"{name} exited early; see {self.base / (name + '.log')}")
             try:
-                with urllib.request.urlopen(self.url[name] + "/healthz", timeout=1):
+                with OPENER.open(self.url[name] + "/healthz", timeout=1):
                     return
             except (OSError, urllib.error.URLError):
                 time.sleep(0.05)
@@ -211,7 +217,7 @@ class NetCluster:
 
     def status(self, name: str) -> dict[str, Any]:
         req = urllib.request.Request(self.url[name] + "/node/status", headers={"X-KIG-Cluster-Token": self.token})
-        with urllib.request.urlopen(req, timeout=2) as r:
+        with OPENER.open(req, timeout=2) as r:
             return json.load(r)
 
     def wait_synced(self, timeout: float = 15.0) -> None:
@@ -266,7 +272,7 @@ class NetCluster:
             req = urllib.request.Request(url + "/v1/command", data=json.dumps(env).encode(),
                                          headers={"Content-Type": "application/json"})
             try:
-                with urllib.request.urlopen(req, timeout=10) as r:
+                with OPENER.open(req, timeout=10) as r:
                     return json.load(r)
             except urllib.error.HTTPError as e:
                 try:

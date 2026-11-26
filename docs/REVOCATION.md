@@ -55,23 +55,45 @@ link can be cut or slowed without changing node code.
 
 * The primary pushes each new certificate to every replica as soon as the command commits, and retries a replica that
   does not answer. Replicas also pull every 0.25 s.
-* Every pull reply carries a proof signed by the primary over the replica's random nonce, the highest audit sequence and
-  a hash of the certificate list. A replayed old reply, or one with certificates stripped out, fails the check and does
-  not refresh the lease (`test_certificate_reply_must_be_fresh_complete_and_signed_for_this_request`).
-* A replica trusts only the primary public key it was started with (`--primary-pub`, read from a file). A replica pinned to
-  another key never syncs and answers `node_stale` (`test_replica_pinned_to_a_different_primary_key_never_serves`).
+* Every pull reply carries a proof signed by the primary over the replica's random nonce, the primary's position
+  (restore generation and audit length), the highest audit sequence covered and a hash of the certificate list. A
+  replayed old reply, one with certificates stripped out, or one with an edited position fails the check and does not
+  refresh the lease (`test_certificate_reply_must_be_fresh_complete_and_signed_for_this_request`).
+* A lease is refreshed only after the replica has applied every certificate and installed a snapshot at or beyond the
+  signed position. Someone on the path who blocks only the snapshot step therefore cannot keep a lease fresh while the
+  replica falls behind (`test_n2_a_lease_is_not_refreshed_unless_the_node_reached_the_signed_position`). The lease clock
+  starts when the last certificate request was sent, not when the reply arrived (`test_the_lease_starts_when_the_request_was_sent`).
+* A primary whose log is shorter than what the replica already applied, with no new restore generation, is refused and
+  does not refresh the lease (`test_a_primary_with_a_shorter_log_does_not_refresh_a_lease`).
+* Certificates travel in pages of at most 200 audit entries, and snapshots as signed state plus blobs in pages of about
+  2 MB, each blob checked against its hash and against the signed state. A long history or a large upload during a
+  partition no longer needs one huge reply (`test_a_replica_with_a_long_history_catches_up_page_by_page`,
+  `test_n1_catch_up_larger_than_one_reply_is_paged`, `test_blob_pages_are_capped_and_only_serve_blobs_of_the_current_state`).
 * `/sync/*` and `/node/status` need a shared cluster token. The token only keeps strangers from reading metadata. Nothing
   is trusted because it carries the token (`test_sync_endpoints_need_the_cluster_token`,
   `test_replica_ignores_a_certificate_signed_by_another_key`).
+* Node to node requests ignore `http_proxy` settings in the environment, and the token file must be a regular file that
+  only its owner can read (`test_http_proxy_environment_is_ignored_for_node_traffic`,
+  `test_token_file_must_be_private_and_a_replica_cannot_bootstrap`). A replica refuses `--bootstrap`.
 * Replica restart, primary stop and restart, a replica that was down during a revocation, and a cut link are covered by
   `tests/test_netcluster.py`: a revoked device stays revoked everywhere and a node that cannot confirm it is current
   refuses everyone.
 
-Honest limits of this version: all processes share one host, one clock and the loopback interface, so the printed
-milliseconds are not WAN numbers (the relay can add a delay, reported as `injected_delay_ms`). Traffic is plain HTTP
-and the cluster token travels in it; across hosts it would need TLS. A party that can see or block that traffic can
-delay a replica but not make it accept an unsigned certificate. Client requests are not relayed, so a partition test
-cuts only the sync links.
+Honest limits of this version:
+
+* All processes share one host, one clock and the loopback interface, so the measured milliseconds are not WAN numbers
+  (the relay can add a delay, reported as `injected_delay_ms`). Quote the figure only from the output of
+  `python -m kig.netcluster`, with that caveat.
+* Node to node traffic is plain HTTP. Across hosts it must run over TLS or an authenticated tunnel: the cluster token
+  alone protects nothing against someone on the path. Such a party can read sync traffic (state metadata and ciphertext)
+  and can delay or block a replica, which then fails closed after the lease. It cannot make a replica accept an unsigned
+  certificate or snapshot, or keep a lease fresh while the replica is behind.
+* The cluster token is shared by all nodes. A holder can make the primary build full-state snapshots again and again
+  (CPU and memory cost) and can read the sync data.
+* A primary restored from an older backup under the same restore generation leaves replicas ahead of it; they refuse to
+  refresh their lease until the operator restores with a new generation or rebuilds the replicas.
+* A replica that cannot sync reports the reason in `/node/status` and prints a JSON line on stderr (`sync_failing`);
+  there is no alerting beyond that. Client requests are not relayed, so a partition test cuts only the sync links.
 
 ## Limits, stated plainly
 

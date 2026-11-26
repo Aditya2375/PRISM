@@ -13,6 +13,7 @@ import pytest
 from kig import crypto as c
 from kig.client import Device
 from kig.netcluster import NetCluster, report
+from kig.node import OPENER
 from kig.service import Denied
 
 
@@ -40,7 +41,7 @@ def http(method, url, token=None, body=None):
         headers["X-KIG-Cluster-Token"] = token
     req = urllib.request.Request(url, data=None if body is None else json.dumps(body).encode(), method=method, headers=headers)
     try:
-        with urllib.request.urlopen(req, timeout=5) as r:
+        with OPENER.open(req, timeout=5) as r:
             return r.status, json.load(r)
     except urllib.error.HTTPError as e:
         try:
@@ -98,13 +99,14 @@ def test_replica_refuses_writes(nc, boss):
 
 def test_sync_endpoints_need_the_cluster_token(nc):
     a, b = nc.url["node-a"], nc.url["node-b"]
-    for method, url in [("GET", a + "/sync/position"), ("GET", a + "/sync/certs?after=-1"),
+    for method, url in [("GET", a + "/sync/certs?after=-1&nonce=" + "a" * 32), ("POST", a + "/sync/blobs"),
                         ("POST", a + "/sync/snapshot"), ("POST", b + "/sync/push"), ("GET", a + "/node/status"),
                         ("GET", b + "/node/status")]:
         body = {"have": [], "certs": []} if method == "POST" else None
         assert http(method, url, None, body)[0] == 401, url
         assert http(method, url, "x" * 40, body)[0] == 401, url
-    assert http("GET", a + "/sync/position", nc.token)[0] == 200
+    assert http("GET", a + "/sync/certs?after=-1&nonce=" + "a" * 32, nc.token)[0] == 200
+    assert http("GET", a + "/sync/position", nc.token)[0] == 404          # the unsigned position endpoint no longer exists
 
 
 def test_replica_ignores_a_certificate_signed_by_another_key(nc, boss):
@@ -210,6 +212,7 @@ def test_report_shape_and_honesty_fields():
     r = report(runs=3)
     assert r["simulated"] is False and r["processes"] == 3 and "loopback" in r["note"]
     assert set(r["revocation_to_last_node_ms"]) == {"min", "median", "max"}
+    assert 0 < r["revocation_to_last_node_ms"]["median"] < 2000                  # a real, finite measurement
     assert r["partition"] == {"node": "node-c", "inside_lease": "served", "after_lease": "node_stale",
                               "after_heal": "revoked"}
 
@@ -227,7 +230,12 @@ def test_certificate_reply_must_be_fresh_complete_and_signed_for_this_request(nc
     pub = (nc.base / "node-a" / "server_sign.pub").read_bytes()
     n1, n2 = "a" * 32, "b" * 32
     got = _fresh_reply(nc, -1, n1)
-    assert verify_fresh(got, n1, -1, pub) == got["upto"]
+    upto, head, pos = verify_fresh(got, n1, -1, pub)
+    assert upto == got["upto"] == head and pos[1] == got["upto"] + 1             # the signed position is part of the proof
+    edited = json.loads(json.dumps(got))
+    edited["proof"]["body"]["position"] = [0, 1]
+    with pytest.raises(Denied):
+        verify_fresh(edited, n1, -1, pub)                    # an edited position breaks the signature
     with pytest.raises(Denied):
         verify_fresh(got, n2, -1, pub)                       # an old reply replayed for a new request
     with pytest.raises(Denied):
@@ -248,3 +256,151 @@ def test_certificate_request_needs_a_well_formed_nonce(nc):
     for nonce in ("", "short", "G" * 32, "a" * 65):
         code, _ = http("GET", f"{nc.url['node-a']}/sync/certs?after=-1&nonce={nonce}", nc.token)
         assert code == 400, nonce
+
+
+def test_n1_catch_up_larger_than_one_reply_is_paged(tmp_path, boss):
+    with NetCluster(tmp_path, boss, lease_s=2.0) as nc:
+        admin = nc.client(boss)
+        nc.cut("node-c")
+        for i in range(3):
+            admin.put_file(f"big{i}", bytes([i + 1]) * 4_500_000, acl=["ops"])
+        nc.heal("node-c")
+        nc.wait_synced(timeout=40)                      # node-c reached the primary's position, 13.5 MB of ciphertext later
+        assert nc.client(boss, "node-c").fetch("big2", auto_rotate=False) == bytes([3]) * 4_500_000
+        assert not nc.status("node-c")["errors"].get("primary")
+
+
+def test_blob_pages_are_capped_and_only_serve_blobs_of_the_current_state(nc, boss):
+    admin = nc.client(boss)
+    for i in range(3):
+        admin.put_file(f"f{i}", bytes([i + 1]) * 1_000_000, acl=["ops"])
+    state = http("POST", nc.url["node-a"] + "/sync/snapshot", nc.token, {"have": [], "meta": True})[1]
+    assert state["body"]["blobs"] == {}                                       # meta snapshot carries no blobs
+    refs = sorted({f["ct"] for f in state["body"]["state"]["files"].values()})
+    code, out = http("POST", nc.url["node-a"] + "/sync/blobs", nc.token, {"hashes": refs, "max_bytes": 1_500_000})
+    assert code == 200 and 1 <= len(out["blobs"]) < len(refs)                 # capped: not all three in one reply
+    code, out = http("POST", nc.url["node-a"] + "/sync/blobs", nc.token, {"hashes": ["0" * 64], "max_bytes": 10})
+    assert code == 404
+    for bad in ({"hashes": [], "max_bytes": 5}, {"hashes": [1], "max_bytes": 5}, {"hashes": ["a"], "max_bytes": True},
+                {"hashes": ["../../etc/passwd"], "max_bytes": 5}):
+        assert http("POST", nc.url["node-a"] + "/sync/blobs", nc.token, bad)[0] in (400, 404)
+
+
+def test_n2_a_lease_is_not_refreshed_unless_the_node_reached_the_signed_position(tmp_path, boss, monkeypatch):
+    """A path attacker who blocks or edits only the snapshot step must not keep a replica's lease fresh."""
+    import kig.node as kn
+    from kig.service import GuardService
+    with NetCluster(tmp_path / "c", boss, lease_s=2.0) as nc:
+        admin = nc.client(boss)
+        admin.put_file("doc", b"v1", acl=["ops"])
+        rep = GuardService(tmp_path / "r", name="node-x", read_only=True, lease_s=2.0)
+        pub = (nc.base / "node-a" / "server_sign.pub").read_bytes()
+        node = kn.Node(rep, "replica", nc.token, primary_url=nc.url["node-a"], primary_pub=pub)
+        real = kn._http
+        blocked = {"on": True}
+
+        def attacker(method, url, token, body=None, timeout=2.0):
+            if blocked["on"] and "/sync/snapshot" in url:
+                raise OSError("snapshot step blocked on the path")
+            return real(method, url, token, body, timeout)
+
+        monkeypatch.setattr(kn, "_http", attacker)
+        with pytest.raises(OSError):
+            node.pull()
+        assert rep.last_sync is None                                            # never fresh: it never got the state
+        blocked["on"] = False
+        node.pull()
+        assert rep.last_sync is not None
+        first = rep.last_sync
+        admin.put_file("doc2", b"v2", acl=["ops"])                              # the primary moves on
+        blocked["on"] = True
+        time.sleep(0.05)
+        with pytest.raises(OSError):
+            node.pull()
+        assert rep.last_sync == first                                           # not refreshed while behind the position
+        blocked["on"] = False
+        node.pull()
+        assert rep.last_sync > first
+
+
+def test_a_replica_with_a_long_history_catches_up_page_by_page(tmp_path, boss):
+    with NetCluster(tmp_path, boss, lease_s=2.0, cert_page=10) as nc:          # ten audit entries per page
+        admin = nc.client(boss)
+        admin.call("create_user", user="member", role="member")
+        for i in range(40):                                    # several pages of history
+            admin.call("enroll_device", **Device.generate(f"d{i}", "member").public_args())
+        victim = Device.generate("victim", "member")
+        admin.call("enroll_device", **victim.public_args())
+        nc.kill("node-c")
+        nc.write(lambda: admin.call("revoke_device", device="victim"))
+        nc.restart("node-c")
+        nc.wait_synced(timeout=40)
+        assert code_of(nc.client(victim, "node-c")) == "revoked"
+        assert nc.status("node-c")["sync_version"] >= 44
+        code, out = http("GET", f"{nc.url['node-a']}/sync/certs?after=-1&nonce={'c' * 32}&limit=100000", nc.token)
+        assert code == 200 and out["proof"]["body"]["upto"] == 9 and out["proof"]["body"]["head"] >= 44   # page capped by the node
+
+
+def test_a_primary_with_a_shorter_log_does_not_refresh_a_lease(nc, boss, monkeypatch):
+    """A rolled-back primary (fewer entries, same restore generation) must not make a replica look fresh."""
+    import kig.node as kn
+    admin = nc.client(boss)
+    for i in range(3):
+        admin.call("enroll_device", **Device.generate(f"x{i}", "ops").public_args())
+    nc.wait_synced()
+    from kig.service import GuardService
+    pub = (nc.base / "node-a" / "server_sign.pub").read_bytes()
+    rep = GuardService(nc.base / "probe", name="probe", read_only=True, lease_s=2.0)
+    node = kn.Node(rep, "replica", nc.token, primary_url=nc.url["node-a"], primary_pub=pub)
+    node.pull()
+    assert rep.last_sync is not None and node.cert_seq >= 3
+    before = rep.last_sync
+    node.cert_seq += 50                                         # as if we had applied entries the primary no longer has
+    with pytest.raises(Denied) as e:
+        node.pull()
+    assert e.value.code == "rollback" and rep.last_sync == before
+
+
+def test_the_lease_starts_when_the_request_was_sent(nc, monkeypatch):
+    import kig.node as kn
+    from kig.service import GuardService
+    pub = (nc.base / "node-a" / "server_sign.pub").read_bytes()
+    rep = GuardService(nc.base / "probe2", name="probe2", read_only=True, lease_s=2.0)
+    node = kn.Node(rep, "replica", nc.token, primary_url=nc.url["node-a"], primary_pub=pub)
+    real = kn._http
+
+    def slow(method, url, token, body=None, timeout=2.0):
+        out = real(method, url, token, body, timeout)
+        if "/sync/certs" in url:
+            time.sleep(0.5)                                     # a slow reply
+        return out
+
+    monkeypatch.setattr(kn, "_http", slow)
+    t0 = rep.mono()
+    node.pull()
+    assert rep.last_sync - t0 < 0.3                             # counted from before the 0.5 s wait, not after it
+
+
+def test_http_proxy_environment_is_ignored_for_node_traffic(nc, monkeypatch):
+    monkeypatch.setenv("http_proxy", "http://127.0.0.1:9")
+    monkeypatch.setenv("HTTP_PROXY", "http://127.0.0.1:9")
+    assert http("GET", nc.url["node-a"] + "/node/status", nc.token)[0] == 200
+    assert nc.status("node-a")["role"] == "primary"
+
+
+def test_token_file_must_be_private_and_a_replica_cannot_bootstrap(tmp_path):
+    from kig.node import _read_token, main
+    f = tmp_path / "t"
+    f.write_text("t" * 40)
+    f.chmod(0o644)
+    with pytest.raises(ValueError):
+        _read_token(f)
+    f.chmod(0o600)
+    assert _read_token(f) == "t" * 40
+    link = tmp_path / "link"
+    link.symlink_to(f)
+    with pytest.raises(ValueError):
+        _read_token(link)
+    with pytest.raises(SystemExit):
+        main(["--role", "replica", "--name", "n", "--data", str(tmp_path / "d"), "--port", "1", "--cluster-token-file", str(f),
+              "--primary-url", "http://127.0.0.1:1", "--primary-pub", str(f), "--bootstrap", "u:d:x"])

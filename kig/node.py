@@ -26,6 +26,7 @@ import hmac
 import json
 import os
 import secrets
+import stat
 import sys
 import threading
 import time
@@ -43,10 +44,19 @@ from .cluster import LEASE_S
 from .service import Denied, GuardService
 
 HTTP_TIMEOUT = 2.0
+PAGE_BYTES = 2 * 1024 * 1024      # ciphertext per blob page; a single larger blob goes alone (a file is at most MAX_FILE_BYTES)
 TOKEN_HEADER = "x-kig-cluster-token"
 
 
+# Node to node traffic never goes through an HTTP proxy named in the environment: the cluster token travels in it.
+OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+CERT_PAGE = 200            # audit entries per certificate page
+
+
 def _read_token(path: str | Path) -> str:
+    st = os.lstat(path)
+    if not stat.S_ISREG(st.st_mode) or st.st_mode & 0o077:
+        raise ValueError(f"the cluster token file {path} must be a regular file readable only by its owner (chmod 600)")
     tok = Path(path).read_text().strip()
     if len(tok) < 32 or not tok.isascii() or not tok.isprintable() or " " in tok:
         raise ValueError("the cluster token must be at least 32 printable characters without spaces")
@@ -57,41 +67,43 @@ def _http(method: str, url: str, token: str, body: Any = None, timeout: float = 
     data = None if body is None else json.dumps(body).encode()
     req = urllib.request.Request(url, data=data, method=method,
                                  headers={"Content-Type": "application/json", "X-KIG-Cluster-Token": token})
-    with urllib.request.urlopen(req, timeout=timeout) as r:
+    with OPENER.open(req, timeout=timeout) as r:
         raw = r.read(MAX_BODY + 1)
         if len(raw) > MAX_BODY:
             raise ValueError("reply too large")
         return json.loads(raw)
 
 
-def verify_fresh(got: dict[str, Any], nonce: str, after: int, primary_pub: bytes) -> int:
+def verify_fresh(got: dict[str, Any], nonce: str, after: int, primary_pub: bytes) -> tuple[int, int, tuple[int, int]]:
     """Check that a certificate reply is complete and was produced for THIS request by the pinned primary key.
 
-    The proof is signed over the replica's random nonce, the highest audit sequence and a hash of the certificate list.
+    The proof is signed over the replica's random nonce, the primary's position (restore generation, audit length), the
+    highest audit sequence and a hash of the certificate list.
     An old reply replayed by someone in the middle, or one with certificates stripped out, fails here, so it cannot
-    refresh the lease. Returns the audit sequence the reply covers.
+    refresh the lease. Returns the last audit sequence the reply covers, the primary's last sequence, and its signed position.
     """
     try:
         proof = got["proof"]
         body = proof["body"]
         ok = c.verify(primary_pub, "fresh", c.canonical(body), c.b64d(proof["sig"]))
         certs = got["certs"]
-        upto = body["upto"]
-        good = (ok and body["nonce"] == nonce and not isinstance(upto, bool) and isinstance(upto, int)
-                and body["after"] == max(-1, min(after, upto))        # the primary clamps after to its own length
+        upto, head = body["upto"], body["head"]
+        pos = body["position"]
+        good = (ok and isinstance(pos, list) and isinstance(head, int) and not isinstance(head, bool) and upto <= head and len(pos) == 2 and all(isinstance(x, int) and not isinstance(x, bool) and x >= 0 for x in pos) and body["nonce"] == nonce and not isinstance(upto, bool) and isinstance(upto, int)
+                and body["after"] == max(-1, min(after, head))        # the primary clamps after to its own length
                 and body["certs_hash"] == c.sha256_hex(c.canonical(certs)))
     except Exception:  # noqa: BLE001  any malformed reply is a failed proof
         good = False
     if not good:
         raise Denied("bad_proof", "the primary's reply was not fresh, complete and signed for this request", 400)
-    return upto
+    return upto, head, (pos[0], pos[1])
 
 
 class Node:
     """The node-specific parts around a GuardService: sync endpoints and background threads."""
 
     def __init__(self, svc: GuardService, role: str, token: str, peers: list[str] | None = None,
-                 primary_url: str | None = None, primary_pub: bytes | None = None, pull_interval: float = 0.25):
+                 primary_url: str | None = None, primary_pub: bytes | None = None, pull_interval: float = 0.25, cert_page: int = CERT_PAGE):
         if role not in ("primary", "replica"):
             raise ValueError("role must be primary or replica")
         if role == "replica" and (not primary_url or not primary_pub):
@@ -103,6 +115,7 @@ class Node:
         self.primary_url = primary_url.rstrip("/") if primary_url else None
         self.primary_pub = primary_pub
         self.pull_interval = pull_interval
+        self.cert_page = max(1, min(int(cert_page), CERT_PAGE))   # audit entries per certificate page
         self.stop = threading.Event()
         self.wake = threading.Event()
         self.cert_seq = -1                     # replica: highest audit sequence whose certificates were applied
@@ -143,14 +156,16 @@ class Node:
 
     def _push_once(self, peer: str) -> None:
         svc = self.svc
-        with svc._lock:
-            upto = len(svc.audit.entries) - 1
-            start = self.acked[peer] + 1
-            certs = svc.certs_from_entries(svc.audit.entries[start:upto + 1]) if upto >= start else []
-        if upto <= self.acked[peer]:
-            return
-        _http("POST", peer + "/sync/push", self.token, {"certs": certs, "upto": upto})
-        self.acked[peer] = upto
+        while True:
+            with svc._lock:
+                head = len(svc.audit.entries) - 1
+                start = self.acked[peer] + 1
+                upto = min(head, start + self.cert_page - 1)
+                if upto < start:
+                    return
+                certs = svc.certs_from_entries(svc.audit.entries[start:upto + 1])
+            _http("POST", peer + "/sync/push", self.token, {"certs": certs, "upto": upto})
+            self.acked[peer] = upto
         self.last_error.pop(peer, None)
 
     # -- replica: pull -------------------------------------------------------
@@ -159,28 +174,66 @@ class Node:
             try:
                 self.pull()
             except Exception as e:  # noqa: BLE001  the lease is what protects us while the primary is out of reach
-                self.last_error["primary"] = type(e).__name__
+                why = f"{type(e).__name__}:{e.code}" if isinstance(e, Denied) else type(e).__name__
+                if self.last_error.get("primary") != why:
+                    print(json.dumps({"node": self.svc.name, "event": "sync_failing", "error": why}), file=sys.stderr, flush=True)
+                self.last_error["primary"] = why
             self.wake.wait(self.pull_interval)
             self.wake.clear()
 
     def pull(self) -> None:
-        """Catch up with the primary. Only a pull that completes refreshes the lease."""
+        """Catch up with the primary. Only a pull that completes AND leaves this node at the primary's signed position
+        refreshes the lease, and the lease clock starts when the last certificate request was sent, not when the
+        reply arrived. Nothing outside the signed proof can keep a lease fresh."""
         assert self.primary_url and self.primary_pub
         with self._pull_lock:
             n = self.svc
-            pos = _http("GET", self.primary_url + "/sync/position", self.token)["position"]
-            if (int(n.snapshot_generation), int(n.snapshot_version)) < (int(pos[0]), int(pos[1])):
-                snap = _http("POST", self.primary_url + "/sync/snapshot", self.token,
-                             {"have": sorted(n.blob_hashes())}, timeout=10.0)
-                n.install_snapshot(snap, self.primary_pub)
-            nonce = secrets.token_hex(16)
-            got = _http("GET", f"{self.primary_url}/sync/certs?after={self.cert_seq}&nonce={nonce}", self.token)
-            upto = verify_fresh(got, nonce, self.cert_seq, self.primary_pub)
-            for cert in got["certs"]:
-                n.apply_cert(cert, self.primary_pub)
-            self.cert_seq = upto
-            n.last_sync = n.mono()
+            cert_seq = self.cert_seq
+            while True:
+                nonce = secrets.token_hex(16)
+                sent = n.mono()
+                got = _http("GET", f"{self.primary_url}/sync/certs?after={cert_seq}&nonce={nonce}&limit={CERT_PAGE}",
+                            self.token)
+                upto, head, pos = verify_fresh(got, nonce, cert_seq, self.primary_pub)
+                if head < cert_seq and pos[0] <= int(n.snapshot_generation):
+                    # the primary has fewer entries than we already applied and no restore generation explains it
+                    raise Denied("rollback", "the primary's log is shorter than what this node already applied", 503)
+                for cert in got["certs"]:
+                    n.apply_cert(cert, self.primary_pub)
+                reset = head < cert_seq               # a restored primary (higher generation): read its log from the start
+                cert_seq = -1 if reset else upto
+                if not reset and upto >= head:
+                    break
+            if (int(n.snapshot_generation), int(n.snapshot_version)) < pos:
+                self._install_snapshot()
+            if (int(n.snapshot_generation), int(n.snapshot_version)) < pos:
+                raise Denied("behind", "this node did not reach the primary's signed position", 503)
+            self.cert_seq = cert_seq
+            n.last_sync = sent
             self.last_error.pop("primary", None)
+
+    def _install_snapshot(self) -> None:
+        """Signed state first, then the missing blobs in pages of about PAGE_BYTES, each checked against its hash."""
+        n = self.svc
+        snap = _http("POST", self.primary_url + "/sync/snapshot", self.token, {"have": [], "meta": True}, timeout=10.0)
+        try:
+            refs = n.blob_refs(snap["body"]["state"])
+        except (KeyError, TypeError, AttributeError):
+            raise Denied("bad_snapshot", "malformed snapshot", 400) from None
+        if not c.verify(self.primary_pub, "snapshot", c.canonical(snap["body"]), c.b64d(snap["sig"])):
+            raise Denied("bad_signature", "snapshot signature invalid", 400)   # before any blob is fetched
+        missing = sorted(h for h in refs if not n.has_blob(h))
+        while missing:
+            page = _http("POST", self.primary_url + "/sync/blobs", self.token,
+                         {"hashes": missing[:64], "max_bytes": PAGE_BYTES}, timeout=10.0)["blobs"]
+            if not isinstance(page, dict) or not page:
+                raise Denied("bad_snapshot", "empty blob page", 400)
+            for h, b64 in page.items():
+                if h not in refs:
+                    raise Denied("bad_snapshot", "blob that the signed state does not refer to", 400)
+                n.store_synced_blob(h, b64)
+            missing = [h for h in missing if not n.has_blob(h)]
+        n.install_snapshot(snap, self.primary_pub)
 
     def apply_pushed(self, certs: list[dict[str, Any]]) -> int:
         """A pushed certificate counts only if it verifies against the pinned primary key. It never refreshes the lease."""
@@ -195,10 +248,11 @@ class Node:
 
 def create_node_app(data_dir: str | Path, role: str, name: str, token: str, peers: list[str] | None = None,
                     primary_url: str | None = None, primary_pub: bytes | None = None, lease_s: float = LEASE_S,
-                    pull_interval: float = 0.25, cors_origins: list[str] | None = None) -> tuple[FastAPI, Node]:
+                    pull_interval: float = 0.25, cors_origins: list[str] | None = None,
+                    cert_page: int = CERT_PAGE) -> tuple[FastAPI, Node]:
     svc = GuardService(data_dir, name=name, read_only=(role == "replica"),
                        lease_s=lease_s if role == "replica" else None)
-    node = Node(svc, role, token, peers, primary_url, primary_pub, pull_interval)
+    node = Node(svc, role, token, peers, primary_url, primary_pub, pull_interval, cert_page)
     app = create_app(data_dir, service=svc, cors_origins=cors_origins)
     app.state.node = node
 
@@ -214,21 +268,20 @@ def create_node_app(data_dir: str | Path, role: str, name: str, token: str, peer
                 node.committed()
             return resp
 
-        @app.get("/sync/position")
-        def position(x_kig_cluster_token: str = Header(default="")) -> dict[str, Any]:
-            authed(x_kig_cluster_token)
-            return {"position": list(svc.sync_position())}
-
         @app.get("/sync/certs")
-        def certs(after: int = -1, nonce: str = "", x_kig_cluster_token: str = Header(default="")) -> dict[str, Any]:
+        def certs(after: int = -1, nonce: str = "", limit: int = CERT_PAGE,
+                  x_kig_cluster_token: str = Header(default="")) -> dict[str, Any]:
             authed(x_kig_cluster_token)
             if not 16 <= len(nonce) <= 64 or any(ch not in "0123456789abcdef" for ch in nonce):
                 raise Denied("bad_request", "nonce must be 16 to 64 lowercase hex characters", 400)
+            limit = max(1, min(limit, node.cert_page))
             with svc._lock:
-                upto = len(svc.audit.entries) - 1
-                after = max(-1, min(after, upto))
-                lst = svc.all_certs(after_seq=after)
-                body = {"nonce": nonce, "after": after, "upto": upto, "certs_hash": c.sha256_hex(c.canonical(lst))}
+                head = len(svc.audit.entries) - 1
+                after = max(-1, min(after, head))
+                upto = min(head, after + limit)           # this page covers entries after+1 .. upto
+                lst = svc.certs_from_entries(svc.audit.entries[after + 1:upto + 1])
+                body = {"nonce": nonce, "after": after, "upto": upto, "head": head, "position": list(svc.sync_position()),
+                        "certs_hash": c.sha256_hex(c.canonical(lst))}
                 sig = c.b64e(c.sign(svc._sec, "fresh", c.canonical(body)))
                 return {"certs": lst, "upto": upto, "proof": {"body": body, "sig": sig}}
 
@@ -238,9 +291,25 @@ def create_node_app(data_dir: str | Path, role: str, name: str, token: str, peer
             try:
                 body = json.loads(await read_capped(request, MAX_BODY))
                 have = {str(h) for h in body["have"]}
+                meta = body.get("meta", False)
+                if not isinstance(meta, bool):
+                    raise ValueError
             except (ValueError, KeyError, TypeError, RecursionError):
                 raise Denied("bad_request", "have must be a list of blob hashes", 400) from None
-            return svc.export_snapshot(have=have)
+            return svc.export_snapshot(have=have, with_blobs=not meta)
+
+        @app.post("/sync/blobs")
+        async def blobs(request: Request, x_kig_cluster_token: str = Header(default="")) -> dict[str, Any]:
+            authed(x_kig_cluster_token)
+            try:
+                body = json.loads(await read_capped(request, MAX_BODY))
+                hashes, cap = body["hashes"], body["max_bytes"]
+                if (not isinstance(hashes, list) or not 1 <= len(hashes) <= 256 or not all(isinstance(h, str) for h in hashes)
+                        or isinstance(cap, bool) or not isinstance(cap, int)):
+                    raise ValueError
+            except (ValueError, KeyError, TypeError, RecursionError):
+                raise Denied("bad_request", "hashes must be a list of 1 to 256 blob hashes and max_bytes an integer", 400) from None
+            return {"blobs": svc.read_blobs(hashes, max(1, min(cap, PAGE_BYTES)))}
     else:
         @app.post("/sync/push")
         async def push(request: Request, x_kig_cluster_token: str = Header(default="")) -> dict[str, Any]:
@@ -297,13 +366,16 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--primary-pub", help="file holding the primary's raw public key (the server_key file)")
     ap.add_argument("--lease", type=float, default=LEASE_S)
     ap.add_argument("--pull-interval", type=float, default=0.25)
+    ap.add_argument("--cert-page", type=int, default=CERT_PAGE, help="audit entries per certificate page (at most 200)")
     ap.add_argument("--bootstrap")
     ns = ap.parse_args(argv)
+    if ns.bootstrap and ns.role != "primary":
+        ap.error("--bootstrap is only for the primary; a replica gets its state from the primary")
     token = _read_token(ns.cluster_token_file)
     pub = Path(ns.primary_pub).read_bytes() if ns.primary_pub else None
     if ns.bootstrap:
         _bootstrap(ns.data, ns.bootstrap)
-    app, _ = create_node_app(ns.data, ns.role, ns.name, token, ns.peer, ns.primary_url, pub, ns.lease, ns.pull_interval)
+    app, _ = create_node_app(ns.data, ns.role, ns.name, token, ns.peer, ns.primary_url, pub, ns.lease, ns.pull_interval, None, ns.cert_page)
     import uvicorn
     uvicorn.run(app, host=ns.host, port=ns.port, log_level="warning")
     return 0

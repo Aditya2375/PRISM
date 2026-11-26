@@ -1361,6 +1361,9 @@ class GuardService:
                     certs.append(self._cert({"kind": "epoch", "file": d["file"], "epoch": d["epoch"],
                                              "seq": e["seq"], "ts": e["ts"]}))
                 self._cert_cache[e["seq"]] = hit = certs
+                if len(self._cert_cache) > 4096:           # a cache, not a store: drop the oldest sequences
+                    for k in sorted(self._cert_cache)[:512]:
+                        del self._cert_cache[k]
             out.extend(hit)
         return out
 
@@ -1373,10 +1376,49 @@ class GuardService:
         """(restore generation, audit length): what a replica compares to decide whether it needs a new snapshot."""
         return int(self.state.get("restore_generation", 0)), len(self.audit.entries)
 
-    def export_snapshot(self, have: set[str] | frozenset[str] = frozenset()) -> dict[str, Any]:
-        """Signed state plus only the ciphertext blobs the caller does not already hold."""
+    @staticmethod
+    def blob_refs(state: dict[str, Any]) -> set[str]:
+        """Every ciphertext blob a state refers to (current and previous version of each file)."""
+        out: set[str] = set()
+        for f in state.get("files", {}).values():
+            out.add(f["ct"])
+            if f.get("prev"):
+                out.add(f["prev"]["ct"])
+        return out
+
+    def has_blob(self, h: str) -> bool:
+        return bool(isinstance(h, str) and len(h) == 64 and all(ch in "0123456789abcdef" for ch in h)
+                    and self._blob_path(h).exists())
+
+    def read_blobs(self, hashes: list[str], max_bytes: int) -> dict[str, str]:
+        """Primary: some of the requested blobs (base64) up to about ``max_bytes`` of ciphertext, at least one.
+        Only blobs the current state refers to are served, so this cannot read other files."""
         with self._lock:
-            blobs = {h: self._load_blob(h) for h in self.blob_hashes() - set(have)}
+            allowed = self.blob_hashes()
+            out: dict[str, str] = {}
+            total = 0
+            for h in hashes:
+                if h not in allowed:
+                    raise Denied("unknown_blob", "that blob is not part of the current state", 404)
+                b64 = self._load_blob(h)
+                if out and total + len(b64) * 3 // 4 > max_bytes:
+                    break
+                out[h] = b64
+                total += len(b64) * 3 // 4
+            return out
+
+    def store_synced_blob(self, h: str, b64: str) -> None:
+        """Replica: keep a blob fetched from the primary, only if its hash is the one asked for."""
+        raw = c.b64d(b64)
+        if c.sha256_hex(raw) != h:
+            raise Denied("bad_snapshot", "blob does not match its hash", 400)
+        self._store_blob(raw)
+
+    def export_snapshot(self, have: set[str] | frozenset[str] = frozenset(), with_blobs: bool = True) -> dict[str, Any]:
+        """Signed state plus only the ciphertext blobs the caller does not already hold (none when ``with_blobs`` is false:
+        the caller then fetches the blobs it lacks in pages with ``read_blobs``)."""
+        with self._lock:
+            blobs = {h: self._load_blob(h) for h in self.blob_hashes() - set(have)} if with_blobs else {}
             body = {"state": json.loads(json.dumps(self.state)), "version": len(self.audit.entries),
                     "generation": int(self.state.get("restore_generation", 0)), "blobs": blobs}
             return {"body": body, "sig": c.b64e(c.sign(self._sec, "snapshot", c.canonical(body)))}
