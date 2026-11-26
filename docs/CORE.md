@@ -189,14 +189,24 @@ FAIL if it copies a file mid-write; run it again before believing a FAIL.
 ## Signed manifest per file version
 
 Every write (`put_file`, `rotate`) carries `manifest_sig`: an ML-DSA-65 signature, by the writing device, over
-`{file, epoch, acl, owner, commit, writer}` (domain-separated purpose `manifest`). The service refuses a write whose
-signature does not match what it is about to commit, and stores it with the version (the previous version keeps its
-own for the grace window). `fetch` returns the signature, the writer id and the writer's public key. The client
-checks it before it unwraps anything. It also pins, on first sight, each writer's signing key and each file's owner
-(kept in a `.pins` file next to its state file), and refuses a later change.
+`{file, epoch, acl, owner, commit, writer, writer_user}` (domain-separated purpose `manifest`). The service refuses a
+write whose signature does not match what it is about to commit and stores it with the version (the previous version
+keeps its own for the grace window). `fetch` returns the signature, the writer's id, user and public key, and the
+enrolment proof for that writer. The client checks all of it before it unwraps anything.
+
+When the client has a `state_path` (the shipped CLI sets one next to the key file), it keeps a `.pins` file:
+the first writer key and owner it sees for each file are pinned (trust on first use; the enrolment fingerprint is
+the out-of-band check for that key). A later writer for the same file is accepted only with the `enroll_device`
+request that an already pinned writer of that file signed (the service keeps that signed request as the proof).
+Only the owner or an admin can write, and only an admin can enrol, so this chain stays within people who could
+already write. A changed owner, a changed key for a pinned writer, or an unproven new writer is refused.
 
 What this stops: someone with the service's signing key or write access to its disk, but no device key, cannot add a
-user to a file's ACL, change its owner or key commitment, or present an older version's signature on a newer one.
-What it does not stop: the service is still trusted for the device directory at first contact (a writer key it
-supplies is pinned as-is; the enrolment fingerprint is the check for that), for which devices receive wraps, and to
-serve data at all. Files written before this change have no manifest and are refused by clients.
+user to a file's ACL, change its owner or key commitment, invent a writer device, or present an older version's
+signature on a newer one. Earlier builds accepted any writer key the service supplied; this closes that.
+What it does not stop: first contact is trust on first use. The service is still trusted for who receives key wraps
+and for availability. The manifest covers the key commitment, which is bound to the ciphertext by the AEAD and the
+reader's key check, but it does not sign a hash of the ciphertext itself. Without a `state_path` (library use
+without persistence) pins last only as long as the Client object. Files without a manifest are refused. The frozen
+fixtures hold throwaway private keys on purpose.
+

@@ -36,10 +36,11 @@ def _wrap_ctx(file_id: str, device_id: str, epoch: int) -> bytes:
     return f"kig/v1/wrap|{file_id}|{device_id}|{epoch}".encode()
 
 
-def manifest_msg(file_id: str, epoch: int, acl: list[str], owner: str, commit: str, writer: str) -> bytes:
+def manifest_msg(file_id: str, epoch: int, acl: list[str], owner: str, commit: str, writer: str,
+                 writer_user: str = "") -> bytes:
     """What a writing device signs for each file version: id, version, ACL, owner, key commitment and itself."""
     return c.canonical({"file": file_id, "epoch": epoch, "acl": sorted(acl), "owner": owner,
-                        "commit": commit, "writer": writer})
+                        "commit": commit, "writer": writer, "writer_user": writer_user})
 
 
 def device_fingerprint(device: str, user: str, sign_pub: bytes, kem_pub: bytes) -> str:
@@ -110,11 +111,11 @@ class Client:
         self.state_path = Path(state_path) if state_path else None
         self.seen_epoch: dict[str, int] = {}   # newest key version this client has seen per file
         self.rotation_errors: list[str] = []   # auto-rotation failures other than a lost race
-        self.pins: dict[str, Any] = {"signers": {}, "owners": {}}   # first-seen signer keys and file owners
+        self.pins: dict[str, Any] = {"signers": {}, "owners": {}, "writers": {}}   # first-seen signer keys and file owners
         if self.state_path and Path(str(self.state_path) + ".pins").exists():
             try:
                 self.pins = json.loads(Path(str(self.state_path) + ".pins").read_text())
-                self.pins["signers"], self.pins["owners"]
+                self.pins.setdefault("writers", {}); self.pins["signers"], self.pins["owners"]
             except (ValueError, OSError, TypeError, KeyError):
                 raise c.CryptoError("client pin file is damaged; refusing to start without it") from None
         if self.state_path and self.state_path.exists():
@@ -146,13 +147,39 @@ class Client:
         pinned_owner = self.pins["owners"].get(file_id)
         if pinned_owner is not None and pinned_owner != owner:
             raise c.CryptoError("file owner differs from the one pinned earlier")
-        msg = manifest_msg(file_id, r["epoch"], r["acl"], owner, r.get("commit", ""), m["writer"])
+        wuser = m.get("writer_user")
+        if not isinstance(wuser, str):
+            raise c.CryptoError("manifest lacks the writer's user")
+        msg = manifest_msg(file_id, r["epoch"], r["acl"], owner, r.get("commit", ""), m["writer"], wuser)
         if not c.verify(c.b64d(m["writer_sign_pub"]), "manifest", msg, c.b64d(m["sig"])):
             raise c.CryptoError("manifest signature invalid: acl, owner or version were changed")
-        if pinned is None or pinned_owner is None:
+        writers = self.pins["writers"].get(file_id, {})
+        if writers and m["writer"] not in writers:
+            self._check_enrollment(m, writers, wuser)       # a writer never seen for this file needs a proof
+        elif m["writer"] in writers and writers[m["writer"]] != m["writer_sign_pub"]:
+            raise c.CryptoError(f"signing key of {m['writer']} for this file differs from the one pinned earlier")
+        if pinned is None or pinned_owner is None or m["writer"] not in writers:
             self.pins["signers"][m["writer"]] = m["writer_sign_pub"]
             self.pins["owners"][file_id] = owner
+            self.pins["writers"].setdefault(file_id, {})[m["writer"]] = m["writer_sign_pub"]
             self._save_pins()
+
+    @staticmethod
+    def _check_enrollment(m: dict[str, Any], writers: dict[str, str], wuser: str) -> None:
+        """A new writer for a file is accepted only with the enrolment request signed by a device already pinned
+        as a writer of this file (only the owner or an admin can write, and only an admin can enrol)."""
+        env = m.get("enrollment")
+        try:
+            body = {k: env[k] for k in ("cmd", "device", "ts", "nonce", "args") + (("aud",) if "aud" in env else ())}
+            ok = (body["cmd"] == "enroll_device" and body["device"] in writers
+                  and body["args"]["device"] == m["writer"] and body["args"]["sign_pub"] == m["writer_sign_pub"]
+                  and body["args"]["user"] == wuser
+                  and c.verify(c.b64d(writers[body["device"]]), "cmd", c.canonical(body), c.b64d(env["sig"])))
+        except (KeyError, TypeError, ValueError, c.CryptoError):
+            ok = False
+        if not ok:
+            raise c.CryptoError(f"writer {m['writer']} was never pinned for this file and carries no valid enrolment "
+                                "signed by a pinned writer")
 
     def _note_epoch(self, file_id: str, epoch: int) -> None:
         if epoch > self.seen_epoch.get(file_id, 0):
@@ -197,7 +224,7 @@ class Client:
         self._note_epoch(file_id, 1)
         commit = _commit(dek, file_id, 1)
         sig = c.sign(self.dev.sign_sec, "manifest",
-                     manifest_msg(file_id, 1, acl, self.dev.user, commit, self.dev.device_id))
+                     manifest_msg(file_id, 1, acl, self.dev.user, commit, self.dev.device_id, self.dev.user))
         return self.call("put_file", file_id=file_id, acl=acl, ciphertext=c.b64e(ct), wraps=wraps,
                          commit=commit, manifest_sig=c.b64e(sig))
 
@@ -248,7 +275,7 @@ class Client:
         wraps = self._wrap_for(dek, file_id, new_epoch, self._recipients(acl))
         commit = _commit(dek, file_id, new_epoch)
         sig = c.sign(self.dev.sign_sec, "manifest",
-                     manifest_msg(file_id, new_epoch, acl, owner, commit, self.dev.device_id))
+                     manifest_msg(file_id, new_epoch, acl, owner, commit, self.dev.device_id, self.dev.user))
         args: dict[str, Any] = {"file_id": file_id, "expected_epoch": epoch, "commit": commit,
                                 "ciphertext": c.b64e(ct), "wraps": wraps, "manifest_sig": c.b64e(sig)}
         if change_acl:

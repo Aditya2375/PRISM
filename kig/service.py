@@ -521,6 +521,7 @@ class GuardService:
         if self.read_only and cmd not in READ_ONLY_CMDS:
             raise Denied("read_only", f"node {self.name} is a read-only replica; send writes to the primary", 421)
         try:
+            self._cur_env = {**body, "sig": env["sig"]} if cmd == "enroll_device" else None
             result = fn(dev_id, dev["user"], user["role"], args)
             if cmd not in READ_ONLY_CMDS:   # reads change no state; the audit log alone records them
                 self._persist()
@@ -607,7 +608,7 @@ class GuardService:
             raise Denied("conflict", "device id already used (ids are never reused)", 409)
         self.state["devices"][new_dev] = {
             "user": target, "status": "active", "sign_pub": c.b64e(sp), "kem_pub": c.b64e(kp),
-            "enrolled_at": self.clock(),
+            "enrolled_at": self.clock(), "enrolled_proof": getattr(self, "_cur_env", None),
         }
         for f in self.state["files"].values():
             if target in f["acl"]:
@@ -735,6 +736,7 @@ class GuardService:
 
     def _check_manifest(self, dev: str, fid: str, epoch: int, acl: list[str], owner: str, commit: str,
                         sig_b64: Any) -> dict[str, Any]:
+        wuser = self.state["devices"][dev]["user"]
         """A new file version must carry its writer's signature over what the service is about to commit."""
         from .client import manifest_msg
         try:
@@ -742,7 +744,7 @@ class GuardService:
             pub = c.b64d(self.state["devices"][dev]["sign_pub"])
         except (c.CryptoError, KeyError, TypeError, ValueError):
             raise Denied("bad_request", "manifest_sig missing or malformed", 400) from None
-        if not c.verify(pub, "manifest", manifest_msg(fid, epoch, acl, owner, commit, dev), sig):
+        if not c.verify(pub, "manifest", manifest_msg(fid, epoch, acl, owner, commit, dev, wuser), sig):
             raise Denied("bad_request", "manifest signature does not match this version, acl and owner", 400)
         return {"writer": dev, "sig": c.b64e(sig)}
 
@@ -750,7 +752,8 @@ class GuardService:
         if not m:
             return None
         dev = self.state["devices"].get(m["writer"])
-        return {"writer": m["writer"], "sig": m["sig"], "writer_sign_pub": dev["sign_pub"] if dev else ""}
+        return {"writer": m["writer"], "sig": m["sig"], "writer_sign_pub": dev["sign_pub"] if dev else "",
+                "writer_user": dev["user"] if dev else "", "enrollment": dev.get("enrolled_proof") if dev else None}
 
     def cmd_put_file(self, dev, user, role, args):
         fid = _valid_id(args.get("file_id"))

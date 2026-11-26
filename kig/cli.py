@@ -13,6 +13,7 @@ import sys
 import urllib.error
 import urllib.request
 
+from . import crypto as c
 from .client import Client, Device
 from .service import Denied, GuardService
 
@@ -52,6 +53,17 @@ def main(argv: list[str] | None = None) -> int:
     g = p.add_mutually_exclusive_group(required=True)
     g.add_argument("--expect-fingerprint", help="fingerprint read aloud or shown on the new device")
     g.add_argument("--unverified", action="store_true", help="enrol without comparing a fingerprint (recorded as unverified)")
+    p = sub.add_parser("put", help="encrypt a local file and store it")
+    p.add_argument("--url", required=True)
+    p.add_argument("--key", required=True)
+    p.add_argument("--file-id", required=True)
+    p.add_argument("--path", required=True)
+    p.add_argument("--acl", default="", help="comma-separated users besides yourself")
+    p = sub.add_parser("get", help="fetch and decrypt a file; checks the signed manifest and pins")
+    p.add_argument("--url", required=True)
+    p.add_argument("--key", required=True)
+    p.add_argument("--file-id", required=True)
+    p.add_argument("--out", required=True)
     p = sub.add_parser("rotate-pending", help="re-key every file flagged needs_rotation that this device may rotate")
     p.add_argument("--url", required=True)
     p.add_argument("--key", required=True)
@@ -94,7 +106,28 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps(dev.public_args()))
             print(f"fingerprint (read this to the admin): {dev.fingerprint()}", file=sys.stderr)
         return 0
-    cl = Client(Device.load(a.key), _post(a.url))
+    # the rollback record and the pinned writer keys live next to the key file, so separate runs share them
+    cl = Client(Device.load(a.key), _post(a.url), state_path=str(a.key) + ".state")
+    if a.op == "put":
+        try:
+            r = cl.put_file(a.file_id, Path(a.path).read_bytes(), acl=[u for u in a.acl.split(",") if u])
+        except Denied as e:
+            print(f"denied: {e.code}: {e.reason}", file=sys.stderr)
+            return 2
+        print(json.dumps(r))
+        return 0
+    if a.op == "get":
+        try:
+            data = cl.fetch(a.file_id)
+        except Denied as e:
+            print(f"denied: {e.code}: {e.reason}", file=sys.stderr)
+            return 2
+        except c.CryptoError as e:
+            print(f"refused: {e}", file=sys.stderr)
+            return 3
+        Path(a.out).write_bytes(data)
+        print(f"wrote {len(data)} bytes to {a.out}")
+        return 0
     if a.op == "enroll":
         raw = json.loads(Path(a.pub).read_text())
         allowed = {"device", "user", "sign_pub", "kem_pub"}
