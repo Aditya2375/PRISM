@@ -47,7 +47,7 @@ def test_F2b_failed_restore_leaves_dest_unusable(tmp_path):
 def test_F3_old_backup_into_fresh_dir_resurrects_revoked_device(w, tmp_path):
     bp, bs = c.kem_keygen()
     old = tmp_path / "old.bak"; backup.create(w.svc, bp, old)
-    w.admin.call("revoke_device", device="bob-laptop")
+    w.ops.call("revoke_device", device="bob-laptop")
     new = tmp_path / "new.bak"; backup.create(w.svc, bp, new)
     dest = tmp_path / "dr"   # disaster recovery into a clean dir: no live dir, no live revoked.log
     try:

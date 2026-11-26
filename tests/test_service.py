@@ -35,7 +35,7 @@ def test_lost_device_scenario(w):
     stolen = Client(w.alice_phone, w.svc.handle, w.clock)
     assert stolen.fetch("report", auto_rotate=False) == b"top secret payroll"
     w.clock.tick(5)
-    r = w.admin.call("report_lost", device="alice-phone", reason="phone stolen")
+    r = w.ops.call("report_lost", device="alice-phone", reason="phone stolen")
     assert r["files_needing_rotation"] == ["report"]
     assert "alice-phone" not in w.svc.state["files"]["report"]["wraps"]
     w.clock.tick(5)
@@ -56,7 +56,7 @@ def test_lost_device_scenario(w):
 
 def test_old_wrap_cannot_decrypt_new_epoch(w):
     old = w.svc.state["files"]["report"]["wraps"]["alice-phone"]
-    w.admin.call("revoke_device", device="alice-phone")
+    w.ops.call("revoke_device", device="alice-phone")
     w.admin.fetch("report")  # rotates
     new_ct = c.b64d(w.svc._load_blob(w.svc.state["files"]["report"]["ct"]))
     phone = Client(w.alice_phone, w.svc.handle, w.clock)
@@ -134,8 +134,8 @@ def test_disable_user_revokes_all_devices(w):
 
 
 def test_rotation_conflict_and_idempotent_revoke(w):
-    r1 = w.admin.call("revoke_device", device="alice-phone")
-    r2 = w.admin.call("revoke_device", device="alice-phone")
+    r1 = w.ops.call("revoke_device", device="alice-phone")
+    r2 = w.ops.call("revoke_device", device="alice-phone")
     assert r2["already"] == "revoked" and r1["ok"]
     e = w.admin.fetch("report", auto_rotate=False)
     assert e == b"top secret payroll"
@@ -152,7 +152,7 @@ def test_acl_change_requires_owner_or_admin_and_removes_access(w):
 
 
 def test_restart_persists_state_and_chain(w, tmp_path):
-    w.admin.call("revoke_device", device="alice-phone")
+    w.ops.call("revoke_device", device="alice-phone")
     svc2 = GuardService(tmp_path / "data", clock=w.clock)
     assert svc2.state["devices"]["alice-phone"]["status"] == "revoked"
     assert svc2.audit.verify() == (True, "ok")
@@ -234,7 +234,7 @@ def test_identical_retry_is_refused_quietly_and_never_penalised(w):
 
 def test_revoked_use_logs_are_bounded_but_alert_once(w):
     stolen = Client(w.alice_phone, w.svc.handle, w.clock)
-    w.admin.call("report_lost", device="alice-phone")
+    w.ops.call("report_lost", device="alice-phone")
     for _ in range(50):
         code(stolen.fetch, "report")
     assert len(alerts(w, "R1-REVOKED-DEVICE-USE")) == 1
@@ -254,7 +254,7 @@ def test_per_device_rate_limit_is_silent_and_recovers(w):
 def test_audit_truncation_detected_on_restart(w, tmp_path):
     import pytest
     from kig.audit import AuditError
-    w.admin.call("revoke_device", device="alice-phone")
+    w.ops.call("revoke_device", device="alice-phone")
     p = tmp_path / "data" / "audit.jsonl"
     lines = p.read_text().splitlines()
     p.write_text("\n".join(lines[:-2]) + "\n")  # drop the newest entries (chain still valid)
@@ -264,13 +264,14 @@ def test_audit_truncation_detected_on_restart(w, tmp_path):
 
 def test_user_text_cannot_forge_a_second_event_or_actor(w):
     evil = 'x"}\n{"seq":99,"type":"device.enrolled","actor":"alice-laptop","data":{}}\r\n'
+    ops = w.ops
     before = len(w.svc.audit.entries)
-    w.admin.call("revoke_device", device="alice-phone", reason=evil)
+    ops.call("revoke_device", device="alice-phone", reason=evil)
     assert w.svc.audit.verify() == (True, "ok")
     raw = (w.svc.dir / "audit.jsonl").read_text().splitlines()
     assert len(raw) == len(w.svc.audit.entries)           # exactly one line per event
     new = w.svc.audit.entries[before:]
-    assert all(e["actor"] in ("alice-laptop", "detector") for e in new)
+    assert all(e["actor"] in ("ops-laptop", "detector") for e in new)
     assert [e["type"] for e in new if e["type"] == "device.revoked"] == ["device.revoked"]
     # a hostile device id string cannot become the recorded actor of a real device
     rogue = Client(Device.generate("alice-laptop\nfake", "alice"), w.svc.handle, w.clock)
@@ -291,7 +292,7 @@ def test_client_detects_version_rollback(w):
 
 
 def test_torn_revoked_log_line_is_ignored(w, tmp_path):
-    w.admin.call("revoke_device", device="bob-laptop")
+    w.ops.call("revoke_device", device="bob-laptop")
     with open(tmp_path / "data" / "revoked.log", "a") as fh:
         fh.write("alice-lap")                         # torn, never acknowledged
     svc2 = GuardService(tmp_path / "data", clock=w.clock)

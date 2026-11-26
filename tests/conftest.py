@@ -35,6 +35,18 @@ class World:
         self.admin.put_file("report", b"top secret payroll", acl=["alice", "bob"])
 
 
+    @property
+    def ops(self):
+        """A second admin, made when a test needs it: an admin's device is removed by another admin (or offline by the
+        operator), never by a sibling device of the same admin."""
+        if not hasattr(self, "_ops"):
+            self.admin.call("create_user", user="ops", role="admin")
+            d = Device.generate("ops-laptop", "ops")
+            self.admin.call("enroll_device", **d.public_args())
+            self._ops = Client(d, self.svc.handle, self.clock)
+        return self._ops
+
+
 @pytest.fixture
 def w(tmp_path):
     return World(tmp_path)

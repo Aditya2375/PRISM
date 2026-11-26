@@ -26,7 +26,7 @@ from typing import Any, Callable
 
 from . import crypto as c
 
-SECTIONS = ("users", "devices", "files")
+SECTIONS = ("users", "devices", "files", "tombs")
 MAX_WAL_ENTRIES = 1000
 MAX_WAL_BYTES = 16 * 1024 * 1024
 GENESIS = "0" * 64

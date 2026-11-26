@@ -25,7 +25,7 @@ def test_grace_then_cutoff(w):
 
 
 def test_revoked_device_gets_no_grace(w):
-    w.admin.call("revoke_device", device="bob-laptop")
+    w.ops.call("revoke_device", device="bob-laptop")
     w.admin.rotate("report")
     assert code(w.bob.fetch, "report", False, 1) == "revoked"
     assert w.svc.state["files"]["report"]["prev"]["wraps"].keys().isdisjoint({"bob-laptop"})
@@ -39,9 +39,10 @@ def test_unknown_epoch_rejected(w):
 
 @pytest.mark.parametrize("point", ["after_revoked_journal", "after_audit", "before_state_rename"])
 def test_crash_during_revocation_never_loses_it(w, tmp_path, point):
+    w.ops                                   # the second admin exists before the snapshots and the crash point
     w.svc.crash_at = point
     with pytest.raises(SimulatedCrash):
-        w.admin.call("report_lost", device="alice-phone", reason="stolen")
+        w.ops.call("report_lost", device="alice-phone", reason="stolen")
     svc2 = restart(w, tmp_path)
     assert svc2.state["devices"]["alice-phone"]["status"] in ("lost", "revoked")
     assert "alice-phone" not in svc2.state["files"]["report"]["wraps"]
@@ -61,8 +62,9 @@ def _put_state_files(d, snap, wal):
 
 
 def test_state_file_rollback_cannot_resurrect_a_revoked_device(w, tmp_path):
+    w.ops                                   # the second admin exists before the snapshots and the crash point
     stale = _state_files(tmp_path / "data")
-    w.admin.call("revoke_device", device="alice-phone")
+    w.ops.call("revoke_device", device="alice-phone")
     _put_state_files(tmp_path / "data", *stale)   # attacker or bad restore
     # the audit log is now ahead of state, and revoked.log has the device
     svc2 = restart(w, tmp_path)
@@ -117,9 +119,10 @@ def test_torn_journal_tail_is_dropped_and_next_write_is_clean(w, tmp_path):
 
 
 def test_revoked_set_is_enforced_when_state_is_restored_from_old_signed_copy(w, tmp_path):
+    w.ops                                   # the second admin exists before the snapshots and the crash point
     d = tmp_path / "data"
     old = _state_files(d)                                       # valid, signed, but before the revoke
-    w.admin.call("revoke_device", device="alice-phone")
+    w.ops.call("revoke_device", device="alice-phone")
     _put_state_files(d, *old)
     svc2 = restart(w, tmp_path)
     assert svc2.state["devices"]["alice-phone"]["status"] != "active"
@@ -130,7 +133,7 @@ def test_rolling_back_state_and_audit_together_is_refused_at_start(w, tmp_path):
     from kig.audit import AuditError
     d = tmp_path / "data"
     old = _state_files(d)
-    w.admin.call("revoke_device", device="alice-phone")
+    w.ops.call("revoke_device", device="alice-phone")
     _put_state_files(d, *old)
     lines = (d / "audit.jsonl").read_text().splitlines()
     n = next(i for i, l in enumerate(lines) if json.loads(l)["type"] == "device.revoked")
@@ -181,7 +184,7 @@ ROT_POINTS = ["rotate_before_prepare", "rotate_after_prepare", "rotate_mid_commi
 
 @pytest.mark.parametrize("point", ROT_POINTS)
 def test_rotation_crash_leaves_one_consistent_version(w, tmp_path, point):
-    w.admin.call("revoke_device", device="alice-phone")
+    w.ops.call("revoke_device", device="alice-phone")
     revoked_before = set(w.svc.revoked)
     w.svc.crash_at = point
     with pytest.raises(SimulatedCrash):

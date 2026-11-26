@@ -16,6 +16,7 @@ from __future__ import annotations
 import json
 import math
 import re
+import sys
 import os
 import threading
 import time
@@ -35,6 +36,7 @@ READ_ONLY_CMDS = {"fetch", "whoami", "eligible", "list_files", "my_devices", "my
 MAX_USER_FILES = 1_000            # per owner
 MAX_USER_BYTES = 256 * 1024 * 1024   # per owner, ciphertext on disk including the kept previous version
 MAX_TOTAL_BYTES = 4 * 1024 ** 3      # whole service
+MAX_USER_TOMBS = 2_000             # remembered deleted ids per owner (each is a few dozen bytes)
 MAX_FILES = 10_000                 # per service, bounds state size and write cost
 DEVICE_RATE_PER_MIN = 240          # authenticated requests per device per minute
 SOURCE_FAIL_PER_MIN = 1200         # failed (unauthenticated) requests per source address per minute
@@ -286,7 +288,7 @@ class GuardService:
             raise StateCorrupt("state.json is missing but this directory holds service data; "
                                "restore from a verified backup instead of starting empty")
         self._fresh = True
-        return self.store.wrap({"suite": c.SUITE, "users": {}, "devices": {}, "files": {}, "applied": 0})
+        return self.store.wrap({"suite": c.SUITE, "users": {}, "devices": {}, "files": {}, "tombs": {}, "applied": 0})
 
     def _check_not_truncated(self) -> None:
         n = int(self.state.get("applied", 0))
@@ -384,6 +386,11 @@ class GuardService:
             if e["type"] != "alert.raised":
                 self.detector.observe(e)
 
+    def _ensure_sections(self) -> None:
+        if "tombs" not in self.state:
+            self.state["tombs"] = {}
+        self.state.pop("deleted", None)
+
     def _reconcile(self) -> None:
         """Fail closed after a crash between audit append and state write.
 
@@ -397,6 +404,8 @@ class GuardService:
             d = e["data"]
             if e["type"] in ("device.revoked", "device.lost"):
                 changed |= self._apply_remove_device(d["device"], e["type"].split(".")[1])
+            elif e["type"] == "file.deleted":
+                changed |= self._apply_delete(d["file"], d.get("owner", ""), int(d.get("epoch", 1)))
             elif e["type"] == "user.disabled":
                 self.state["users"].get(d["user"], {})["active"] = False
                 for dev in self._devices_of(d["user"]):
@@ -422,6 +431,9 @@ class GuardService:
 
     def _raise(self, a: Alert) -> None:
         data = a.as_data()
+        if a.severity in ("critical", "high"):
+            # the only push there is: one line on the service's stderr, next to the audit log entry
+            print(f"ALERT {a.severity} {a.rule}: {a.explanation}", file=sys.stderr, flush=True)
         self.audit.append(self.clock(), "alert.raised", "detector", data)
 
     def _devices_of(self, user: str) -> list[str]:
@@ -644,6 +656,7 @@ class GuardService:
             raise  # commands validate before mutating, so a denial leaves state untouched
         except Exception:  # noqa: BLE001  never leave half-applied in-memory state
             self.state = self._load_state()
+            self._ensure_sections()
             self._recover_rotations()
             raise Denied("internal", "internal error; no change was committed", 500) from None
         return result
@@ -745,6 +758,13 @@ class GuardService:
                        "forbidden", "only the owner or an admin may do this")
         if d["status"] != "active":
             return {"ok": True, "already": d["status"]}
+        # an admin device is removed by ANOTHER admin user, or offline by the operator (`kig revoke-device`); a stolen
+        # admin device therefore cannot race the owner by revoking the owner's other devices
+        if self.state["users"].get(d["user"], {}).get("role") == "admin" and d["user"] == user and target != dev:
+            self._deny("authz.denied", dev, {"device": dev, "action": kind, "target": target,
+                                             "why": "an admin's device is removed by another admin or by the operator"},
+                       "forbidden", "an admin device can only be removed by another admin user, or offline by the operator "
+                                    "(kig revoke-device)")
         # the last active device of the last active admin can never be removed, or nobody could enrol or recover
         still = [x for x, v in self.state["devices"].items() if x != target and v["status"] == "active"
                  and self.state["users"].get(v["user"], {}).get("role") == "admin" and self.state["users"][v["user"]]["active"]]
@@ -922,8 +942,16 @@ class GuardService:
         fid = _valid_id(args.get("file_id"))
         if fid in self.state["files"]:
             raise Denied("conflict", "file exists; use rotate", 409)
-        if fid in self.state.get("deleted", ()):
-            raise Denied("conflict", "this file id was used and deleted; ids are never reused", 409)
+        tomb = self.state["tombs"].get(fid)
+        epoch = 1
+        if tomb is not None:
+            if role != "admin" and tomb["owner"] != user:
+                raise Denied("conflict", "this file id was used and deleted by someone else; ids are never reused across owners", 409)
+            epoch = int(tomb["epoch"]) + 1
+            if args.get("epoch") != epoch:
+                raise Denied("tombstoned", f"this file id was deleted; create it again at next_epoch={epoch}", 409)
+        elif args.get("epoch") not in (None, 1):
+            raise Denied("bad_request", "epoch must be 1 for a new file id", 400)
         acl = self._acl(args, user)
         if user not in acl:
             raise Denied("bad_request", "creator must be in acl", 400)
@@ -934,21 +962,21 @@ class GuardService:
         ct_raw = self._check_blob(args.get("ciphertext"))
         self._check_quota(user, len(ct_raw), True)
         wraps = self._check_wraps(args.get("wraps"), acl)
-        manifest = self._check_manifest(dev, fid, 1, acl, user, commit, args.get("manifest_sig"))
+        manifest = self._check_manifest(dev, fid, epoch, acl, user, commit, args.get("manifest_sig"))
         ct = self._store_blob(ct_raw)             # last: a rejected request never leaves a blob behind
         try:
             self.state["files"][fid] = {
-                "owner": user, "acl": acl, "epoch": 1, "ct": ct, "commit": commit, "manifest": manifest,
+                "owner": user, "acl": acl, "epoch": epoch, "ct": ct, "commit": commit, "manifest": manifest,
                 "wraps": wraps, "needs_rotation": False, "prev": None,
             }
-            self._log("file.created", dev, {"file": fid, "owner": user, "acl": acl, "epoch": 1})
+            self._log("file.created", dev, {"file": fid, "owner": user, "acl": acl, "epoch": epoch})
         except BaseException:
             if self.state["files"].get(fid, {}).get("ct") == ct and not self._logged_created(fid):
                 del self.state["files"][fid]
             if ct not in self.blob_hashes():
                 self._blob_path(ct).unlink(missing_ok=True)
             raise
-        return {"ok": True, "epoch": 1}
+        return {"ok": True, "epoch": epoch}
 
     def _logged_created(self, fid: str) -> bool:
         return any(e["type"] == "file.created" and isinstance(e["data"], dict) and e["data"].get("file") == fid
@@ -1027,17 +1055,26 @@ class GuardService:
             self._deny("authz.denied", dev, {"device": dev, "file": fid, "action": "delete_file"},
                        "forbidden", "only the owner or an admin may delete this file")
         gone = [h for h in (f["ct"], (f.get("prev") or {}).get("ct")) if h]
+        mine = sum(1 for t in self.state["tombs"].values() if t["owner"] == f["owner"])
+        if mine >= MAX_USER_TOMBS and fid not in self.state["tombs"]:
+            raise Denied("quota", "this owner has deleted too many files; ask the operator to raise the limit", 429)
         self._log("file.deleted", dev, {"file": fid, "owner": f["owner"], "by": user, "epoch": f["epoch"]})
-        del self.state["files"][fid]
-        gone_ids = self.state.setdefault("deleted", [])
-        gone_ids.append(fid)
-        del gone_ids[:-100_000]
+        self._apply_delete(fid, f["owner"], f["epoch"])
         self._persist()
         live = self.blob_hashes()
         for h in gone:
             if h not in live:
                 self._blob_path(h).unlink(missing_ok=True)
+                self._sizes.pop(h, None)
         return {"ok": True}
+
+    def _apply_delete(self, fid: str, owner: str, epoch: int) -> bool:
+        """Remove the file and keep a small record (owner, highest epoch) so the id can only come back at a later epoch."""
+        if fid not in self.state["files"] and fid in self.state["tombs"]:
+            return False
+        self.state["files"].pop(fid, None)
+        self.state["tombs"][fid] = {"owner": owner, "epoch": epoch}
+        return True
 
     def root_fingerprints(self) -> list[str]:
         """Fingerprints of the devices that nobody enrolled (the bootstrap device and any operator-recovered one)."""
@@ -1045,6 +1082,29 @@ class GuardService:
         with self._lock:
             return [device_fingerprint(i, v["user"], c.b64d(v["sign_pub"]), c.b64d(v["kem_pub"]))
                     for i, v in self.state["devices"].items() if v.get("enrolled_proof") is None]
+
+    def revoke_device_offline(self, device: str, reason: str = "") -> list[str]:
+        """Offline operator action: remove any device, including an admin's. Needs the data directory. Logged as an
+        operator action. Still refuses to remove the last active admin device (use recover-admin first)."""
+        with self._lock:
+            target = _valid_id(device)
+            d = self.state["devices"].get(target)
+            if d is None:
+                raise Denied("bad_request", "unknown device", 400)
+            if d["status"] != "active":
+                return []
+            still = [x for x, v in self.state["devices"].items() if x != target and v["status"] == "active"
+                     and self.state["users"].get(v["user"], {}).get("role") == "admin" and self.state["users"][v["user"]]["active"]]
+            if not still:
+                raise Denied("conflict", "this is the last active admin device; enrol another with recover-admin first", 409)
+            self._record_revoked([target])
+            self._apply_remove_device(target, "revoked")
+            pending = sorted(k for k, f in self.state["files"].items() if f["needs_rotation"])
+            self._log("device.revoked", "operator", {"device": target, "user": d["user"], "by": "operator",
+                                                     "reason": str(reason)[:200], "files_needing_rotation": pending,
+                                                     "operator": True})
+            self._persist()
+            return pending
 
     def recover_admin(self, user: str, device: str, sign_pub: bytes, kem_pub: bytes) -> str:
         """Offline operator recovery: enrol a new device for an existing active admin user. Needs the data directory,

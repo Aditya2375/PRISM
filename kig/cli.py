@@ -75,6 +75,13 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--user", required=True)
     p.add_argument("--device", required=True, help="new device id (never used before)")
     p.add_argument("--out", required=True, help="where to write the new device key file")
+    p = sub.add_parser("revoke-device", help="offline: remove any device, including an admin's (stop the service first)")
+    p.add_argument("--data", required=True)
+    p.add_argument("--device", required=True)
+    p.add_argument("--reason", default="")
+    p = sub.add_parser("unpin-root", help="remove one pinned root fingerprint from this device's trust record")
+    p.add_argument("--key", required=True)
+    p.add_argument("--fingerprint", required=True)
     p = sub.add_parser("pin-root", help="pin one more root device fingerprint in this device's trust record (read it from the operator)")
     p.add_argument("--key", required=True)
     p.add_argument("--fingerprint", required=True)
@@ -161,6 +168,25 @@ def main(argv: list[str] | None = None) -> int:
         print("clients must pin these roots (--root-fingerprint): " + ", ".join(roots + [fp]))
         print(f"existing clients: run `kig pin-root --key KEYFILE --fingerprint {fp}` (the fingerprint must reach them out of band)")
         print("every file this user can read is flagged for re-keying; record this action: it is in the audit log as an operator action", file=sys.stderr)
+        return 0
+    if a.op == "revoke-device":
+        try:
+            pending = GuardService(a.data).revoke_device_offline(a.device, a.reason)
+        except Denied as e:
+            print(f"refused: {e.reason}", file=sys.stderr)
+            return 2
+        except (RuntimeError, OSError, ValueError) as e:
+            print(f"refused: cannot open the data directory ({e}). Stop the running service first; this is offline.", file=sys.stderr)
+            return 2
+        print(f"device {a.device} removed; {len(pending)} file(s) need re-keying; logged as an operator action")
+        return 0
+    if a.op == "unpin-root":
+        try:
+            Client(Device.load(a.key), lambda env: {}, state_path=str(a.key) + ".state").remove_root(a.fingerprint)
+        except (c.CryptoError, OSError, vault.VaultError) as e:
+            print(f"refused: {e}", file=sys.stderr)
+            return 2
+        print("unpinned")
         return 0
     if a.op == "pin-root":
         try:

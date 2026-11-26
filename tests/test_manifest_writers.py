@@ -56,7 +56,7 @@ def test_admin_proven_by_the_owner_may_write_but_a_member_may_not(w):
     carol = Device.generate("carol-laptop", "carol")
     w.admin.call("enroll_device", **carol.public_args())
     w.clock.tick(1)
-    w.admin.call("report_lost", device="alice-phone", reason="x")    # something that needs a rotation by carol
+    w.ops.call("report_lost", device="alice-phone", reason="x")    # something that needs a rotation by carol
     w.admin.rotate("report", acl=["alice", "bob", "carol"])
     cc = Client(carol, w.svc.handle, w.clock)
     cc.fetch("report", auto_rotate=False)

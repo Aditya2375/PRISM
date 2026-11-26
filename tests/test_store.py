@@ -32,7 +32,7 @@ def test_reloaded_state_equals_memory_after_random_operations(w, tmp_path):
             elif op == "user":
                 w.admin.call("create_user", user=f"u{i}", role="member")
             elif op == "revoke" and "alice-tablet" in w.svc.state["devices"]:
-                w.admin.call("revoke_device", device="alice-tablet")
+                w.ops.call("revoke_device", device="alice-tablet")
             else:
                 w.bob.fetch("report")
         except Exception:  # noqa: BLE001  denials are fine, we compare state not outcomes

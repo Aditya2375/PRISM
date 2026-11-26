@@ -264,3 +264,12 @@ store has no key but the public file exists, start-up refuses rather than genera
 an exclusive file lock (`.keylock`), the secret is stored before the public file, and temp files are random, exclusive
 and never follow symlinks. Exclusive writes use a hard link; on a filesystem without hard links they check and then
 rename (content is never partial, but two writers racing at the same instant could collide). `FileKeyStore` without a passphrase stores the key unencrypted (mode 0600) and logs a warning. Backup and the CLI still use their own key files.
+
+
+## Round 5 changes (what the tests prove)
+
+* Admin device removal: only another admin user, or the offline `kig revoke-device`; refused for a sibling device of the same admin (`test_i1_admin_device_cannot_be_removed_by_its_own_sibling_but_another_admin_can`).
+* Deleted ids are a journalled section with one small record each, so a create/delete loop does not grow every journal line (`test_j1_deleted_ids_do_not_bloat_every_journal_line`); capped per owner (`test_j1_tombstones_are_capped_per_owner`); only the owner or an admin can bring an id back, at the next epoch (`test_j2_*`, `test_i3_*`).
+* A crash after the delete is logged but before it is saved still deletes on restart (`test_j4_*`).
+* Explicit root fingerprints are used alone and `kig unpin-root` removes a hostile pin (`test_j3_*`).
+* Alerts: high and critical ones also print a line on stderr. That line and the audit log are the only places an operator sees them.

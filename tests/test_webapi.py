@@ -37,6 +37,14 @@ def world(tmp_path):
     return svc, clock, transport, a, Client(rav, transport, clock), Client(phone, transport, clock), adm, rav, phone
 
 
+def second_admin(a, transport, clock, name="omar"):
+    """An admin's device is removed by another admin, not by a sibling device of the same admin."""
+    a.call("create_user", user=name, role="admin")
+    d = Device.generate(f"{name}-laptop", name)
+    a.call("enroll_device", **d.public_args())
+    return Client(d, transport, clock)
+
+
 def web(client, **kw):
     return TestClient(create_web_app(client, TOKEN, cors_origins=kw.get("cors", [])), base_url="http://127.0.0.1")
 
@@ -102,10 +110,13 @@ def test_my_devices_shows_only_my_own_and_no_keys(tmp_path):
 
 
 def test_report_lost_then_the_lost_device_is_locked_out_and_activity_shows_it(tmp_path):
-    svc, _, _, a, r, p, *_ = world(tmp_path)
+    svc, clock, tr, a, r, p, *_ = world(tmp_path)
     wa, wp = web(a), web(p)
     a.put_file("salary", b"n", acl=["ravi"])
-    assert wa.post("/devices/lost", json={"device": "asha-phone", "reason": "stolen"}, headers=H).status_code == 200
+    # a sibling device of the same admin may not remove it (a thief holding the laptop could lock the owner out)
+    assert wa.post("/devices/lost", json={"device": "asha-phone", "reason": "stolen"}, headers=H).status_code == 403
+    om = second_admin(a, tr, clock)
+    assert web(om).post("/devices/lost", json={"device": "asha-phone", "reason": "stolen"}, headers=H).status_code == 200
     assert wp.get("/files", headers=H).status_code >= 400          # the lost phone is refused by the service
     states = {d["device"]: d["status"] for d in wa.get("/devices", headers=H).json()["devices"]}
     assert states == {"asha-laptop": "active", "asha-phone": "lost"}
@@ -274,8 +285,8 @@ def test_command_names_are_short_lowercase_words_before_anything_is_logged(tmp_p
 
 
 def test_every_string_in_activity_is_capped(tmp_path):
-    svc, _, _, a, *_ = world(tmp_path)
-    a.call("report_lost", device="asha-phone", reason="r" * 5000)
+    svc, clock, tr, a, *_ = world(tmp_path)
+    second_admin(a, tr, clock).call("report_lost", device="asha-phone", reason="r" * 5000)
     ents = web(a).get("/activity", headers=H).json()["entries"]
     lost = [e for e in ents if e["type"] == "device.lost"][0]
     assert len(lost["data"]["reason"]) <= 200
@@ -298,7 +309,9 @@ def test_delete_file_owner_and_admin_only_and_strict_body(tmp_path):
     # the owner can; an admin can delete a member's file
     assert wr.post("/files/delete", json={"file_id": "ravi-note"}, headers=H).status_code == 200
     again = {**mine, "file_id": "ravi-note-2"}
-    assert wr.post("/files", json=mine, headers=H).status_code == 409           # a deleted id is never reused
+    assert wr.post("/files", json=mine, headers=H).status_code == 200           # the owner may bring the id back, at a later epoch
+    assert svc.state["files"]["ravi-note"]["epoch"] == 2
+    assert wr.post("/files/delete", json={"file_id": "ravi-note"}, headers=H).status_code == 200
     assert wr.post("/files", json=again, headers=H).status_code == 200
     assert wa.post("/files/delete", json={"file_id": "ravi-note-2"}, headers=H).status_code == 200
     assert wa.post("/files/delete", json={"file_id": "ravi-note-2"}, headers=H).status_code >= 400   # already gone

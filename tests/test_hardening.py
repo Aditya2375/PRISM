@@ -44,7 +44,7 @@ def test_torn_revoked_log_tail_is_cut_not_glued(w, tmp_path):
         fh.write(b"half-written-dev\t18000")
     svc2 = GuardService(d, clock=w.clock)
     w.clock.tick(1)
-    Client(w.alice_laptop, svc2.handle, w.clock).call("revoke_device", device="alice-phone")
+    Client(w.alice_laptop, svc2.handle, w.clock).call("revoke_device", device="bob-laptop")
     for line in (d / "revoked.log").read_text().splitlines():
         dev, ts = line.split("\t")
         float(ts)
@@ -171,7 +171,7 @@ def test_post_auth_log_extras_are_capped_but_first_line_per_device_is_kept(w):
     from kig.service import POST_AUTH_EXTRA_LOG_MIN
     assert POST_AUTH_EXTRA_LOG_MIN <= 300
     stolen = Client(w.alice_phone, w.svc.handle, w.clock)
-    w.admin.call("report_lost", device="alice-phone")
+    w.ops.call("report_lost", device="alice-phone")
     n = len(w.svc.audit.entries)
     w.svc._ua_post = POST_AUTH_EXTRA_LOG_MIN          # global extras budget already used up this minute
     code(stolen.fetch, "report")

@@ -7,6 +7,7 @@ from __future__ import annotations
 import hmac as _hmac
 import json
 import os
+import re
 import secrets
 import time
 from dataclasses import dataclass
@@ -128,6 +129,10 @@ class Client:
                 self.pins.setdefault("writers", {}); self.pins.setdefault("writer_users", {}); self.pins.setdefault("admins", {}); self.pins.setdefault("roots", []); self.pins["signers"], self.pins["owners"]
             except (ValueError, OSError, TypeError, KeyError):
                 raise c.CryptoError("client pin file is damaged; refusing to start without it") from None
+        if self._roots and set(self.pins.get("roots", [])) - set(self._roots):
+            import sys
+            print("warning: this device has pinned roots that the given --root-fingerprint / KIG_ROOT_FINGERPRINTS do not list; "
+                  "only the given ones are used (kig unpin-root removes the stale pin)", file=sys.stderr)
         if self.state_path and self.state_path.exists():
             try:
                 self.seen_epoch = {k: int(v) for k, v in json.loads(self.state_path.read_text()).items()}
@@ -262,9 +267,11 @@ class Client:
 
     # -- root of trust ---------------------------------------------------------
     def _root_list(self) -> list[str]:
-        out = list(self._roots or [])
-        out += [r for r in self.pins.get("roots", []) if r not in out]
-        return out
+        if self._roots:
+            # roots given by flag or environment are the operator's word and are used ALONE; a root that was pinned
+            # earlier (for example from a hostile first contact) cannot ride along
+            return list(self._roots)
+        return list(self.pins.get("roots", []))
 
     def add_root(self, fingerprint: str) -> None:
         """Pin one more root device (for example the device an operator enrolled by offline recovery). The fingerprint
@@ -276,6 +283,16 @@ class Client:
         if fp not in roots:
             roots.append(fp)
             self._save_pins()
+        self._trusted.clear(); self._admin_users.clear()
+
+    def remove_root(self, fingerprint: str) -> None:
+        """Forget one pinned root (for example one pinned from a hostile first contact). Local trust record only."""
+        fp = fingerprint.strip().lower()
+        roots = self.pins.setdefault("roots", [])
+        if fp not in roots:
+            raise c.CryptoError("that fingerprint is not pinned here")
+        roots.remove(fp)
+        self._save_pins()
         self._trusted.clear(); self._admin_users.clear()
 
     @staticmethod
@@ -412,17 +429,28 @@ class Client:
         return devs
 
     # -- file operations -------------------------------------------------------
-    def put_file(self, file_id: str, plaintext: bytes, acl: list[str] | None = None) -> dict[str, Any]:
+    def put_file(self, file_id: str, plaintext: bytes, acl: list[str] | None = None, _epoch: int = 1) -> dict[str, Any]:
         acl = sorted(set(acl or []) | {self.dev.user})
         dek = c.random_key()
-        ct = c.aead_encrypt(dek, plaintext, _file_aad(file_id, 1))
-        wraps = self._wrap_for(dek, file_id, 1, self._recipients(acl))
-        self._note_epoch(file_id, 1)
-        commit = _commit(dek, file_id, 1)
+        ct = c.aead_encrypt(dek, plaintext, _file_aad(file_id, _epoch))
+        wraps = self._wrap_for(dek, file_id, _epoch, self._recipients(acl))
+        commit = _commit(dek, file_id, _epoch)
         sig = c.sign(self.dev.sign_sec, "manifest",
-                     manifest_msg(file_id, 1, acl, self.dev.user, commit, self.dev.device_id, self.dev.user))
-        return self.call("put_file", file_id=file_id, acl=acl, ciphertext=c.b64e(ct), wraps=wraps,
-                         commit=commit, manifest_sig=c.b64e(sig))
+                     manifest_msg(file_id, _epoch, acl, self.dev.user, commit, self.dev.device_id, self.dev.user))
+        extra = {"epoch": _epoch} if _epoch != 1 else {}
+        self._note_epoch(file_id, _epoch)
+        try:
+            r = self.call("put_file", file_id=file_id, acl=acl, ciphertext=c.b64e(ct), wraps=wraps,
+                          commit=commit, manifest_sig=c.b64e(sig), **extra)
+        except Exception as e:
+            if not hasattr(e, "code"):
+                raise
+            # a deleted id comes back at the next epoch, so readers that saw the old file do not call it a rollback
+            m = re.search(r"next_epoch=(\d+)", e.reason or "") if e.code == "tombstoned" and _epoch == 1 else None
+            if m and 1 < int(m.group(1)) <= 1_000_000:
+                return self.put_file(file_id, plaintext, acl, _epoch=int(m.group(1)))
+            raise
+        return r
 
     def _open(self, file_id: str, r: dict[str, Any]) -> bytes:
         epoch = r["epoch"]

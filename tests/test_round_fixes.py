@@ -181,11 +181,16 @@ def test_g1_last_admin_device_cannot_be_revoked(tmp_path):
     phone = Device.generate("adm-phone", "adm")
     ac.call("enroll_device", **phone.public_args())
     thief = Client(phone, svc.handle)
-    thief.call("revoke_device", device="adm-1")
+    with pytest.raises(Denied) as e:
+        thief.call("revoke_device", device="adm-1")             # I1: a sibling admin device cannot do this at all
+    assert e.value.code == "forbidden"
+    # the operator removes the laptop offline; the phone is then the last admin device and stays
+    assert svc.revoke_device_offline("adm-1", "laptop lost") == []
     with pytest.raises(Denied):
-        thief.call("revoke_device", device="adm-phone")
+        svc.revoke_device_offline("adm-phone")
     assert thief.call("whoami")["user"] == "adm"
     assert [d for d, v in svc.state["devices"].items() if v["status"] == "active"] == ["adm-phone"]
+    assert any(e["type"] == "device.revoked" and e["actor"] == "operator" for e in svc.audit.entries)
 
 
 def test_g1_recover_admin_offline_after_total_loss(tmp_path):
@@ -224,7 +229,7 @@ def test_g2_directory_rollback_refused_with_pin(tmp_path):
     phone = Device.generate("adm-phone", "adm")
     ac.call("enroll_device", **phone.public_args())
     shutil.copytree(d, tmp_path / "old")
-    ac.call("report_lost", device="adm-phone")
+    svc.revoke_device_offline("adm-phone")
     shutil.rmtree(d); shutil.copytree(tmp_path / "old", d)
     with pytest.raises(Exception):
         GuardService(d, pin_path=pin)
@@ -396,16 +401,75 @@ def test_i2_rejected_put_leaves_no_blob_behind(tmp_path):
     assert blobs == []
 
 
-def test_i3_deleted_file_id_is_never_reused(tmp_path):
+def test_i3_deleted_file_id_comes_back_only_at_a_later_epoch_and_only_for_owner_or_admin(tmp_path):
     svc, adm = boot(tmp_path / "d")
     ac = Client(adm, svc.handle)
     ac.put_file("doc", b"v1", acl=["adm"]); ac.rotate("doc")
     ac.call("delete_file", file_id="doc")
+    assert svc.state["tombs"]["doc"] == {"owner": "adm", "epoch": 2}
+    # the raw call without the next epoch is refused and says which one to use
     with pytest.raises(Denied) as e:
-        ac.put_file("doc", b"v2", acl=["adm"])
+        ac.call("put_file", file_id="doc", acl=["adm"], ciphertext="", wraps={}, commit="", manifest_sig="")
+    assert e.value.code in ("tombstoned", "bad_request")
+    ac.put_file("doc", b"v2", acl=["adm"])                      # the client follows the hint
+    assert svc.state["files"]["doc"]["epoch"] == 3
+    assert ac.fetch("doc") == b"v2"
+    ac.rotate("doc")
+    assert svc.state["files"]["doc"]["epoch"] == 4
+
+
+def test_j2_a_member_cannot_burn_or_take_an_id_that_belongs_to_someone_else(tmp_path):
+    svc, adm = boot(tmp_path / "d")
+    ac = Client(adm, svc.handle)
+    mem = member(svc, adm, "bob")[1]
+    ac.put_file("shared-name", b"x", acl=["adm"])
+    ac.call("delete_file", file_id="shared-name")
+    with pytest.raises(Denied) as e:
+        Client(mem, svc.handle).put_file("shared-name", b"y", acl=["bob"])
     assert e.value.code == "conflict"
-    assert "doc" in svc.state["deleted"]
-    ac.put_file("doc-2", b"v2", acl=["adm"])
+    assert "shared-name" not in svc.state["files"]
+    ac.put_file("shared-name", b"z", acl=["adm"])               # the owner is not locked out
+
+
+def test_j1_deleted_ids_do_not_bloat_every_journal_line(tmp_path, monkeypatch):
+    monkeypatch.setattr(S, "DEVICE_RATE_PER_MIN", 10 ** 6)
+    svc, adm = boot(tmp_path / "d")
+    ac = Client(adm, svc.handle)
+    for i in range(400):
+        ac.put_file(f"t{i}-" + "x" * 40, b"x", acl=["adm"]); ac.call("delete_file", file_id=f"t{i}-" + "x" * 40)
+    ac.put_file("other", b"x", acl=["adm"])
+    w0 = svc.store.wal_bytes
+    ac.put_file("another", b"x", acl=["adm"])
+    assert svc.store.wal_bytes - w0 < 20_000                    # one line, not the 400 tombstones again
+    assert len(svc.state["tombs"]) == 400
+
+
+def test_j1_tombstones_are_capped_per_owner(tmp_path, monkeypatch):
+    import kig.service as sv
+    monkeypatch.setattr(sv, "MAX_USER_TOMBS", 3)
+    svc, adm = boot(tmp_path / "d")
+    ac = Client(adm, svc.handle)
+    for i in range(4):
+        ac.put_file(f"c{i}", b"x", acl=["adm"])
+    for i in range(3):
+        ac.call("delete_file", file_id=f"c{i}")
+    with pytest.raises(Denied) as e:
+        ac.call("delete_file", file_id="c3")
+    assert e.value.code == "quota" and "c3" in svc.state["files"]
+
+
+def test_j4_crash_after_the_delete_is_logged_still_deletes_on_restart(tmp_path):
+    svc, adm = boot(tmp_path / "d")
+    ac = Client(adm, svc.handle)
+    ac.put_file("doc", b"x", acl=["adm"])
+    def boom():
+        raise RuntimeError("power cut")
+    svc._persist = boom
+    with pytest.raises(Exception):
+        ac.call("delete_file", file_id="doc")
+    s2 = GuardService(tmp_path / "d", clock=svc.clock)
+    assert any(e["type"] == "file.deleted" for e in s2.audit.entries)
+    assert "doc" not in s2.state["files"] and "doc" in s2.state["tombs"]
 
 
 def test_i7_quota_walk_does_not_touch_the_disk_again(tmp_path, monkeypatch):
@@ -530,14 +594,52 @@ def test_i5_first_use_pin_requires_our_own_chain_to_verify(tmp_path):
     assert not bc.pins.get("roots")
 
 
-def test_i1_admin_device_revoked_by_a_sibling_raises_a_critical_alert(tmp_path):
+def test_i1_admin_device_cannot_be_removed_by_its_own_sibling_but_another_admin_can(tmp_path):
     svc, laptop = boot(tmp_path / "d")
     ac = Client(laptop, svc.handle)
     phone = Device.generate("adm-phone", "adm")
     ac.call("enroll_device", **phone.public_args())
-    Client(phone, svc.handle).call("revoke_device", device="adm-1")
-    al = [e["data"] for e in svc.audit.entries if e["type"] == "alert.raised"]
-    assert any(a["rule"] == "R5-ADMIN-DEVICE-REVOKED-BY-SIBLING" and a["severity"] == "critical" for a in al)
+    ac.call("create_user", user="adm2", role="admin")
+    d2 = Device.generate("adm2-1", "adm2")
+    ac.call("enroll_device", **d2.public_args())
+    for kind in ("revoke_device", "report_lost"):
+        with pytest.raises(Denied) as e:
+            Client(phone, svc.handle).call(kind, device="adm-1")
+        assert e.value.code == "forbidden"
+    assert svc.state["devices"]["adm-1"]["status"] == "active"
+    Client(d2, svc.handle).call("report_lost", device="adm-1")      # another admin user may
+    assert svc.state["devices"]["adm-1"]["status"] == "lost"
+
+
+def test_i1_offline_operator_revoke_is_logged_and_prints_nothing_secret(tmp_path):
+    svc, laptop = boot(tmp_path / "d")
+    ac = Client(laptop, svc.handle)
+    phone = Device.generate("adm-phone", "adm")
+    ac.call("enroll_device", **phone.public_args())
+    svc.revoke_device_offline("adm-phone", "stolen")
+    e = [x for x in svc.audit.entries if x["type"] == "device.revoked"][-1]
+    assert e["actor"] == "operator" and e["data"]["operator"] is True
+    with pytest.raises(Denied):
+        Client(phone, svc.handle).call("whoami")
+
+
+def test_j3_explicit_roots_are_used_alone_and_unpin_removes_a_hostile_pin(tmp_path, capsys):
+    svc, adm = boot(tmp_path / "d")
+    real = Client(adm, svc.handle).whoami_fingerprint() if hasattr(Client, "whoami_fingerprint") else None
+    hostile = "ab" * 16
+    dev = Device.generate("x-1", "adm")
+    st = tmp_path / "k.state"
+    c1 = Client(dev, lambda e: {}, state_path=st)
+    c1.add_root(hostile)
+    c2 = Client(dev, lambda e: {}, state_path=st, roots=["cd" * 16])
+    assert c2._root_list() == ["cd" * 16]                      # the earlier pin does not ride along
+    assert "warning" in capsys.readouterr().err
+    c3 = Client(dev, lambda e: {}, state_path=st)
+    assert c3._root_list() == [hostile]
+    c3.remove_root(hostile)
+    assert Client(dev, lambda e: {}, state_path=st)._root_list() == []
+    with pytest.raises(c.CryptoError):
+        c3.remove_root(hostile)
 
 
 def test_i1_member_device_revoked_by_its_own_other_device_is_not_that_alert(tmp_path):

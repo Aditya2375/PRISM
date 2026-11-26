@@ -114,9 +114,10 @@ class Cluster:
         owner = Device.generate("bench-owner", "bench")
         self.primary.bootstrap("bench", "bench-owner", owner.sign_pub, owner.kem_pub)
         admin = self.writer(owner)
+        admin.call("create_user", user="bench-member", role="member")   # an admin device is not revoked by its own admin
         times = []
         for i in range(runs):
-            d = Device.generate(f"bench-dev-{i}", "bench")
+            d = Device.generate(f"bench-dev-{i}", "bench-member")
             admin.call("enroll_device", **d.public_args())
             self.bus.drain()
             self.sync_all()

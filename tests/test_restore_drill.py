@@ -18,7 +18,7 @@ def _plain(x):
 
 @pytest.mark.parametrize("mode", ["accept_rollback", "live_revoked_log"])
 def test_total_loss_then_restore_then_keep_working(w, tmp_path, mode):
-    w.admin.call("revoke_device", device="alice-phone")
+    w.ops.call("revoke_device", device="alice-phone")
     live = w.svc.dir
     pub, sec = c.kem_keygen()
     bk = tmp_path / "drill.bak"

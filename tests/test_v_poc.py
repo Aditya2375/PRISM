@@ -1,10 +1,10 @@
 import json
 from kig.service import Denied
-from test_webapi import world, web, H
+from test_webapi import world, web, H, second_admin
 
 def test_V3_thief_chosen_cmd_string_is_bounded_in_activity(tmp_path):
     svc, clock, tr, a, r, phone, adm, rav, pdev = world(tmp_path)
-    a.call("report_lost", device="asha-phone", reason="stolen")
+    second_admin(a, tr, clock).call("report_lost", device="asha-phone", reason="stolen")
     evil = "<img src=x onerror=alert(1)>" + "A" * 200000
     try: phone.call(evil)
     except Exception as e: print("thief got", type(e).__name__, str(e)[:80])

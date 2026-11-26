@@ -16,7 +16,7 @@ def _junk(w, dev, src):
 
 
 def test_G1_log_budget_can_be_exhausted_to_hide_revoked_device_use(w):
-    w.admin.call("revoke_device", device="bob-laptop")
+    w.ops.call("revoke_device", device="bob-laptop")
     w.clock.tick(1)
     for i in range(12):                       # 12 sources x 3 lines > 30 total lines per minute
         for j in range(3):

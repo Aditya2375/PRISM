@@ -55,7 +55,7 @@ def test_J4_model_check_memory_equals_disk_after_random_commands(tmp_path):
             elif op == "rot":
                 f = rnd.choice([x["file_id"] for x in w.admin.call("list_files")["files"]]); w.admin.rotate(f)
             elif op == "rev":
-                w.admin.call("revoke_device", device=f"d{rnd.randrange(step+1)}")
+                w.ops.call("revoke_device", device=f"d{rnd.randrange(step+1)}")
             elif op == "acl":
                 f = rnd.choice([x["file_id"] for x in w.admin.call("list_files")["files"]]); w.admin.rotate(f, acl=["alice"])
         except (Denied, Exception):

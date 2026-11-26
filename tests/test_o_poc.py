@@ -7,7 +7,7 @@ def test_O1_partitioned_replica_exposure_is_bounded_by_the_lease(tmp_path):
     # adapted: the exposure inside the lease is the documented design (docs/REVOCATION.md); it must end at LEASE_S
     cl, admin, alice, phone, bob = build(tmp_path); time.sleep(0.02)
     cl.bus.partitioned.add("node-b")
-    admin.call("report_lost", device="alice-phone", reason="stolen")
+    cl.ops.call("report_lost", device="alice-phone", reason="stolen")
     assert code(cl.client(phone, "node-b").fetch, "report") is None          # inside the lease: still served
     cl.skew = LEASE_S + 0.5
     assert code(cl.client(phone, "node-b").fetch, "report") == "node_stale"  # outside the lease: refused
@@ -15,7 +15,7 @@ def test_O1_partitioned_replica_exposure_is_bounded_by_the_lease(tmp_path):
 def test_O2_lease_is_enforced_by_the_node_itself(tmp_path):
     cl, admin, alice, phone, bob = build(tmp_path); time.sleep(0.02)
     cl.bus.partitioned.add("node-b")
-    admin.call("report_lost", device="alice-phone", reason="stolen")
+    cl.ops.call("report_lost", device="alice-phone", reason="stolen")
     cl.skew = LEASE_S + 1
     node = cl.nodes["node-b"]
     from kig.client import Client
