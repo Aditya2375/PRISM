@@ -79,7 +79,7 @@ unless `allow_older` is set. Restore needs evidence for two guards, or an explic
 the counter (`min_counter`, the highest counter you know, or `live_dir`) and the live revoked log
 (`live_revoked_log`). `accept_counter_rollback` and `accept_lost_revocations` waive them separately
 (`accept_rollback` is both); what was waived is written into the restored audit chain as
-`restore.rollback_accepted`. The counter is kept in the signed state, so deleting `backup.counter`
+`restore.completed`. The counter is kept in the signed state, so deleting `backup.counter`
 does not reset it. **Record each backup counter outside the data directory**; without it nothing
 can tell a stale backup from a fresh one. The service key is opened and matched to its public key
 before anything is written; the directory is built as `dest.partial` and renamed, and removed on
