@@ -41,17 +41,17 @@ python -m pytest -q            # the full suite
   known-answer vectors run in the tests. One more vetted library, PyCryptodome, is used only for the optional k-of-n
   split of the backup key (`kig/threshold.py`, Shamir from `Crypto.Protocol.SecretSharing`); we wrote no
   secret-sharing maths. Both are pinned in `requirements.txt`.
-* A server that never held a private key cannot silently change who may read a file, provided the client pins a root
-  fingerprint (`--root-fingerprint`, printed by `init`): each file version carries a device-signed manifest of its ACL,
+* A server that never held a private key cannot silently change who may read a file, **after the client has pinned a root
+  fingerprint that reached it out of band** (`--root-fingerprint`, printed by `init`; always pass it in the quick start): each file version carries a device-signed manifest of its ACL,
   owner and key commitment, every recipient key is checked against the device's signed enrolment, and clients pin the
-  writers. Without a pinned root the client trusts the first admin device it sees (trust on first use). A server can
+  writers. Without one, the client pins whatever root the server shows on first use, so a server that is malicious from the first call chooses the root. A server can
   still withhold updates and see ciphertext and metadata.
 * Operations: run **one** service process per data directory (a lock file makes a second one refuse to start; do not
   use `uvicorn --workers`). Keep a rollback pin outside the data directory with `KIG_PIN_FILE=/path/outside/pin.json`;
   the service then refuses to start on a data directory older than the pin. Per-user limits: 1,000 files and 256 MB;
   service limit 4 GB. Only admins can add other users to a file's list; owners and admins can delete files
   (`delete_file`). If every admin device is lost, the operator runs `kig recover-admin --data DIR --user U --device NEW
-  --out KEY` on the host (an audited operator action) and the clients pin the roots it prints. Recovery restores
+  --out KEY` on the host (an audited operator action) and clients pin the roots it prints (`kig pin-root --key KEYFILE --fingerprint FP` for existing clients; the fingerprint must reach them out of band). Recovery restores
   control, not file keys: files keyed only to lost devices stay unreadable until restored from a backup.
 * The audit log is the witness for the state journal, so deleting or truncating state is detected.
 * Backups are signed and sealed, stream their blobs, and are restored with explicit, audited waivers.

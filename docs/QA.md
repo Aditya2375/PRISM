@@ -52,7 +52,7 @@ rate bounded. Test `test_auth_failure_burst_alerts_but_never_locks_anyone_out`.
 
 **Can an evil server add a reader to my file?** Not without being caught by clients that have seen the file before:
 each version has a device-signed manifest of ACL, owner and key commitment. Tests in `tests/test_manifest.py`
-(`test_service_side_acl_edit_is_caught_by_client`, `test_owner_swap_is_caught`). With a pinned root fingerprint, a file never seen before is also checked: its writer must chain to the root (`test_f3_forged_first_sight_file_is_refused`). Without a pinned root, the root is trusted on first use, backed by the enrolment fingerprint check (`kig enroll --expect-fingerprint`). A server can still withhold updates.
+(`test_service_side_acl_edit_is_caught_by_client`, `test_owner_swap_is_caught`). After a root fingerprint was pinned out of band, a file never seen before is also checked: its writer must chain to the root (`test_f3_forged_first_sight_file_is_refused`). Without a pinned root, the root is trusted on first use, backed by the enrolment fingerprint check (`kig enroll --expect-fingerprint`). A server can still withhold updates.
 
 **Can a member write or become admin?** Writes need owner or admin authority, proven by signed requests.
 Tests `test_admin_proven_by_the_owner_may_write_but_a_member_may_not`, `test_privilege_escalation_alert`.

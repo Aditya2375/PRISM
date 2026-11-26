@@ -43,7 +43,7 @@ python -m pytest -q            # 350+ tests, green on a clean clone
 | --- | --- |
 | Lost device is denied on every node | demo step 6; `docs/REVOCATION.md` attack table, each row names its test |
 | Server never holds plaintext or keys | `test_service_never_holds_plaintext_or_dek`, `tests/test_server_holds_no_secrets.py` |
-| A malicious server cannot swap a recipient key, invent a file or change who reads it, when a root fingerprint is pinned (trust on first use otherwise) | `tests/test_manifest.py`, `tests/test_manifest_writers.py`, `tests/test_round_fixes.py` |
+| A malicious server cannot swap a recipient key, invent a file or change who reads it, after a root fingerprint was pinned out of band (trust on first use otherwise) | `tests/test_manifest.py`, `tests/test_manifest_writers.py`, `tests/test_round_fixes.py` |
 | Tamper, truncation and reordering of the log are detected | `tests/test_audit.py`, `tests/test_standalone_verifier.py` |
 | Crashes do not lose a revocation or half-apply a rotation | `tests/test_chaos.py` (random kill points), `tests/test_crash_and_cutoff.py` |
 | Library behaviour matches NIST | `tests/test_crypto_proof.py` (ACVP vectors, commit pinned) |
