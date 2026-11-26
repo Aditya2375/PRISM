@@ -1,0 +1,122 @@
+"""Explainable detection rules.
+
+Every rule is a plain function of recent audit events. An alert names the rule,
+says in words why it fired, and lists the audit sequence numbers that caused it,
+so an operator (or judge) can replay the evidence.
+"""
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from typing import Any
+
+BURST_WINDOW_S = 60
+BURST_THRESHOLD = 3
+FRESH_ACCOUNT_S = 600
+LOCKOUT_S = 300
+
+
+@dataclass
+class Alert:
+    rule: str
+    severity: str  # critical, high, medium, low
+    explanation: str
+    evidence: list[int]
+    response: str = "none"
+    subject: str = ""
+    lock_key: str = ""
+    lock_until: float = 0.0
+
+    def as_data(self) -> dict[str, Any]:
+        return {
+            "rule": self.rule,
+            "severity": self.severity,
+            "explanation": self.explanation,
+            "evidence": self.evidence,
+            "response": self.response,
+            "subject": self.subject,
+        }
+
+
+@dataclass
+class Detector:
+    """Keeps a small amount of derived state; fed one audit entry at a time."""
+
+    removed_at: dict[str, int] = field(default_factory=dict)  # device -> seq of revoke/lost
+    failures: dict[str, list[tuple[float, int]]] = field(default_factory=dict)
+    first_device_ts: dict[str, float] = field(default_factory=dict)
+    max_tracked: int = 4096
+
+    def observe(self, entry: dict[str, Any]) -> list[Alert]:
+        t, seq, ts, d = entry["type"], entry["seq"], entry["ts"], entry["data"]
+        alerts: list[Alert] = []
+
+        if t in ("device.revoked", "device.lost"):
+            self.removed_at[d["device"]] = seq
+        elif t == "device.enrolled":
+            self.first_device_ts.setdefault(d["user"], ts)
+        elif t == "auth.revoked_device_use":
+            dev = d["device"]
+            ref = self.removed_at.get(dev)
+            ev = [seq] + ([ref] if ref is not None else [])
+            alerts.append(
+                Alert(
+                    "R1-REVOKED-DEVICE-USE",
+                    "critical",
+                    f"Device {dev} sent a validly signed '{d.get('cmd')}' request after it was "
+                    f"{d.get('status')}. The request was denied and no key material was released.",
+                    ev,
+                    response="denied; device stays blocked",
+                    subject=dev,
+                )
+            )
+        elif t == "auth.replay":
+            alerts.append(
+                Alert(
+                    "R2-REPLAY",
+                    "high",
+                    f"A signed request from {d['device']} reused a nonce already seen. "
+                    "The replay was denied.",
+                    [seq],
+                    response=f"locked {LOCKOUT_S}s",
+                    subject=d["device"],
+                    lock_key=d["device"],
+                    lock_until=ts + LOCKOUT_S,
+                )
+            )
+        elif t in ("auth.bad_signature", "auth.unknown_device"):
+            key = d.get("device", "?")
+            hist = [x for x in self.failures.get(key, []) if ts - x[0] <= BURST_WINDOW_S]
+            hist.append((ts, seq))
+            self.failures[key] = hist
+            if len(self.failures) > self.max_tracked:
+                self.failures.pop(next(iter(self.failures)))
+            if len(hist) >= BURST_THRESHOLD:
+                alerts.append(
+                    Alert(
+                        "R3-AUTH-FAILURE-BURST",
+                        "high",
+                        f"{len(hist)} failed authentications claiming device '{key}' within "
+                        f"{BURST_WINDOW_S}s. The identifier is locked for {LOCKOUT_S}s.",
+                        [s for _, s in hist],
+                        response=f"locked {LOCKOUT_S}s",
+                        subject=key,
+                        lock_key=key,
+                        lock_until=ts + LOCKOUT_S,
+                    )
+                )
+                self.failures[key] = []
+        elif t == "role.changed" and d.get("new") == "admin" and d.get("old") != "admin":
+            born = self.first_device_ts.get(d["user"])
+            fresh = born is not None and ts - born < FRESH_ACCOUNT_S
+            alerts.append(
+                Alert(
+                    "R4-PRIVILEGE-ESCALATION",
+                    "critical" if fresh else "high",
+                    f"User {d['user']} was promoted from {d.get('old')} to admin by {d['by']}"
+                    + (" shortly after their first device was enrolled." if fresh else "."),
+                    [seq],
+                    response="recorded; demote with set_role to undo",
+                    subject=d["user"],
+                )
+            )
+        return alerts
