@@ -110,3 +110,58 @@ def test_failed_restore_leaves_no_partial_directory(w, tmp_path, bk):
     with pytest.raises(Exception):
         b.restore(out, tmp_path / "r3", pub, sec, d / "server_sign.pub", d / "nonexistent.key", accept_rollback=True)
     assert not (tmp_path / "r3").exists() and not (tmp_path / "r3.partial").exists()
+
+
+def test_rotate_pending_cli_rekeys_flagged_files(w, tmp_path, capsys):
+    from kig import cli
+    new = Device.generate("bob-phone", "bob")
+    w.admin.call("enroll_device", **new.public_args())
+    assert w.svc.state["files"]["report"]["needs_rotation"]
+    w.alice_laptop.save(tmp_path / "a.json")
+    cli_send = lambda env: w.svc.handle(env, "cli")
+    orig, orig_client = cli._post, cli.Client
+    cli._post = lambda url: cli_send
+    cli.Client = lambda dev, send: orig_client(dev, send, w.clock)
+    try:
+        w.clock.tick(1)
+        cli.main(["rotate-pending", "--url", "http://x", "--key", str(tmp_path / "a.json")])
+    finally:
+        cli._post, cli.Client = orig, orig_client
+    assert not w.svc.state["files"]["report"]["needs_rotation"]
+    assert json.loads(capsys.readouterr().out)["rotated"] == ["report"]
+
+
+def test_restore_records_which_checks_were_accepted_in_the_audit_chain(w, tmp_path, bk):
+    out, pub, sec = bk
+    d = tmp_path / "data"
+    b.restore(out, tmp_path / "r", pub, sec, d / "server_sign.pub", d / "server_sign.key", accept_rollback=True)
+    svc2 = GuardService(tmp_path / "r", clock=w.clock)
+    e = [x for x in svc2.audit.entries if x["type"] == "restore.rollback_accepted"]
+    assert len(e) == 1 and set(e[0]["data"]["unchecked"]) == {"counter", "revocations"}
+    assert svc2.audit.verify() == (True, "ok")
+
+
+def test_accepting_counter_rollback_does_not_waive_the_revocation_check(w, tmp_path, bk):
+    out, pub, sec = bk
+    d = tmp_path / "data"
+    with pytest.raises(b.BackupError):
+        b.restore(out, tmp_path / "r", pub, sec, d / "server_sign.pub", d / "server_sign.key", accept_counter_rollback=True)
+    with pytest.raises(b.BackupError):
+        b.restore(out, tmp_path / "r", pub, sec, d / "server_sign.pub", d / "server_sign.key", live_revoked_log=d / "revoked.log")
+
+
+def test_backup_counter_is_in_signed_state(w, tmp_path):
+    pub, _ = c.kem_keygen()
+    b.create(w.svc, pub, tmp_path / "1.bak")
+    assert GuardService(tmp_path / "data", clock=w.clock).state["backup_counter"] == 1
+
+
+def test_proxy_hops_pick_the_address_the_trusted_proxy_appended(tmp_path, monkeypatch):
+    from fastapi.testclient import TestClient
+    from kig.api import create_app
+    monkeypatch.setenv("KIG_PROXY_HOPS", "2")
+    app = create_app(tmp_path / "d", trust_proxy=True)
+    cl = TestClient(app, raise_server_exceptions=False)
+    for i in range(5):
+        cl.post("/v1/command", json={"cmd": "x"}, headers={"x-forwarded-for": f"9.9.9.{i}, 203.0.113.5, 10.0.0.1"})
+    assert [k for k in app.state.service._rate if k.startswith("srcfail:")] == ["srcfail:203.0.113.5"]
