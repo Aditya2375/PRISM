@@ -166,4 +166,11 @@ attacker does not control, and it is optional: without `expect_fingerprint` the 
 
 `python -m kig.cli doctor --data DIR` opens the directory as the service would (crash recovery runs; a journal
 behind the audit log is reported as `FAIL open`), then checks the audit chain, every referenced blob against its
-hash, orphan blobs and file permissions. Exit code 1 on any FAIL.
+hash, orphan blobs and file permissions. Exit code 1 on any FAIL. Run it on a stopped service or a copy: it opens the
+directory itself, and two processes must not share one data directory.
+
+## Demo
+
+`python -m kig.demo` is the lost-device story. `python -m kig.demo --story` adds a blob tamper, an edited audit
+copy, a crash in the middle of a rotation with recovery on restart, and a claim-to-evidence table. It exits 1 if
+any of those checks fails. Not in it yet: the three-node revocation timings.

@@ -14,7 +14,7 @@ def step(n: int, text: str) -> None:
     print(f"\n[{n}] {text}")
 
 
-def main() -> int:
+def main(story: bool = False) -> int:
     with tempfile.TemporaryDirectory() as tmp:
         svc = GuardService(tmp)
         time.sleep(0.01)
@@ -53,8 +53,69 @@ def main() -> int:
         for e in svc.audit.entries:
             if e["seq"] in {a2 for a in svc.alerts() for a2 in a["evidence"]}:
                 print(f"   seq {e['seq']:>2} {e['type']:<26} actor={e['actor']}")
+        if story:
+            ok = _story(tmp, svc, admin, ravi) and ok
         return 0 if ok else 1
 
 
+def _story(tmp: str, svc: GuardService, admin: Client, ravi: Client) -> bool:
+    """Steps 6 to 8: tampering, a crash in the middle of a rotation, and the claim-to-evidence table."""
+    import copy
+    from pathlib import Path
+    from .audit import verify_chain
+    from .doctor import check
+    from .service import SimulatedCrash
+    good = True
+
+    step(6, "Tampering: a stored ciphertext is changed on disk, and an audit line is edited")
+    h = next(iter(svc.blob_hashes()))
+    bp = svc._blob_path(h)
+    orig = bp.read_bytes()
+    bp.write_bytes(orig[:-1] + bytes([orig[-1] ^ 1]))
+    try:
+        ravi.fetch("payroll-2026", auto_rotate=False)
+        print("   UNEXPECTED: tampered blob was served")
+        good = False
+    except Denied as e:
+        print(f"   read refused: {e.code}")
+    print("   doctor:", "; ".join(f"{r[0]} {r[1]}" for r in check(tmp) if r[0] != "OK") or "nothing found")
+    bp.write_bytes(orig)
+    svc = GuardService(tmp)          # doctor opened the directory itself, so continue on a fresh instance
+    admin, ravi = Client(admin.dev, svc.handle), Client(ravi.dev, svc.handle)
+    forged = copy.deepcopy(svc.audit.entries)
+    forged[3]["actor"] = "someone-else"
+    ok2, why = verify_chain(forged, svc.pub)
+    print(f"   edited audit copy verifies: {ok2} ({why})")
+    good = good and not ok2
+
+    step(7, "Crash in the middle of a key rotation, then restart")
+    svc.crash_at = "rotate_mid_commit"
+    try:
+        admin.rotate("payroll-2026", acl=["asha", "ravi"])
+        print("   no crash happened")
+        good = False
+    except SimulatedCrash as c_:
+        print(f"   process killed at: {c_}")
+    svc2 = GuardService(tmp)
+    print("   after restart, ravi reads:", Client(ravi.dev, svc2.handle).fetch("payroll-2026", auto_rotate=False).decode())
+    kinds = [e["type"] for e in svc2.audit.entries if e["type"].startswith("file.rotat")]
+    print("   rotation records in the audit log:", ", ".join(kinds[-3:]))
+    ok3, why = svc2.audit.verify()
+    print(f"   audit chain after recovery: {ok3} ({why})")
+    good = good and ok3
+
+    step(8, "Claim to evidence")
+    rows = [
+        ("Lost device is cut off at once", "step 3: validly signed request denied, no key released"),
+        ("Revocation is visible and explained", "step 5: alert R1 with the two audit entries as evidence"),
+        ("Stored data cannot be altered silently", "step 6: blob hash check refuses the read; doctor FAILs"),
+        ("The audit log cannot be edited silently", "step 6: edited copy fails chain verification"),
+        ("A crash does not lose or half-apply a rotation", "step 7: restart recovers, file readable, chain valid"),
+    ]
+    for claim, ev in rows:
+        print(f"   {claim:<48} {ev}")
+    return good
+
+
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(main(story="--story" in sys.argv[1:]))
