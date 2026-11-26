@@ -36,7 +36,8 @@ READ_ONLY_CMDS = {"fetch", "whoami", "eligible", "list_files", "my_devices", "my
 MAX_USER_FILES = 1_000            # per owner
 MAX_USER_BYTES = 256 * 1024 * 1024   # per owner, ciphertext on disk including the kept previous version
 MAX_TOTAL_BYTES = 4 * 1024 ** 3      # whole service
-MAX_USER_TOMBS = 2_000             # remembered deleted ids per owner (each is a few dozen bytes)
+COOLING_OFF_S = 900                # a device enrolled less than this long ago cannot remove admins or change roles
+MAX_USER_TOMBS = int(os.environ.get("KIG_MAX_DELETED_IDS", "2000"))   # remembered deleted ids per owner (a few dozen bytes each)
 MAX_FILES = 10_000                 # per service, bounds state size and write cost
 DEVICE_RATE_PER_MIN = 240          # authenticated requests per device per minute
 SOURCE_FAIL_PER_MIN = 1200         # failed (unauthenticated) requests per source address per minute
@@ -134,6 +135,7 @@ class GuardService:
         self._fresh = False
         self.store = StateStore(self.dir, self._sec, self.pub, self._crash)
         self.state: dict[str, Any] = self._load_state()
+        self._ensure_sections()
         self._check_not_truncated()
         self._check_journal_not_behind_audit()
         self.pin_path = Path(pin_path or os.environ.get("KIG_PIN_FILE") or "") if (pin_path or os.environ.get("KIG_PIN_FILE")) else None
@@ -386,9 +388,21 @@ class GuardService:
             if e["type"] != "alert.raised":
                 self.detector.observe(e)
 
+    def _tombs(self) -> dict[str, Any]:
+        """Deleted-id records; state written before this section existed (old data dir, older backup or snapshot) has none."""
+        if self.state.get("tombs") is None:
+            self.state["tombs"] = {}
+        return self.state["tombs"]
+
     def _ensure_sections(self) -> None:
         if "tombs" not in self.state:
             self.state["tombs"] = {}
+        old = self.state.get("deleted")
+        if old:
+            # a data directory from before the tombstone section: those ids keep working as deleted, and only an admin
+            # can bring one back (the old list did not record the owner)
+            for fid in old:
+                self.state["tombs"].setdefault(fid, {"owner": "", "epoch": 1})
         self.state.pop("deleted", None)
 
     def _reconcile(self) -> None:
@@ -405,7 +419,14 @@ class GuardService:
             if e["type"] in ("device.revoked", "device.lost"):
                 changed |= self._apply_remove_device(d["device"], e["type"].split(".")[1])
             elif e["type"] == "file.deleted":
+                f = self.state["files"].get(d["file"]) or {}
+                gone = [h for h in (f.get("ct"), (f.get("prev") or {}).get("ct")) if h]
                 changed |= self._apply_delete(d["file"], d.get("owner", ""), int(d.get("epoch", 1)))
+                live = self.blob_hashes()
+                for h in gone:
+                    if h not in live:
+                        self._blob_path(h).unlink(missing_ok=True)
+                        self._sizes.pop(h, None)
             elif e["type"] == "user.disabled":
                 self.state["users"].get(d["user"], {})["active"] = False
                 for dev in self._devices_of(d["user"]):
@@ -433,7 +454,9 @@ class GuardService:
         data = a.as_data()
         if a.severity in ("critical", "high"):
             # the only push there is: one line on the service's stderr, next to the audit log entry
-            print(f"ALERT {a.severity} {a.rule}: {a.explanation}", file=sys.stderr, flush=True)
+            # ascii-escaped JSON strings: a device id or user text in the explanation cannot start a fake line or
+            # carry a terminal escape
+            print(f"ALERT {json.dumps(a.severity)} {json.dumps(a.rule)} {json.dumps(a.explanation)}", file=sys.stderr, flush=True)
         self.audit.append(self.clock(), "alert.raised", "detector", data)
 
     def _devices_of(self, user: str) -> list[str]:
@@ -649,7 +672,10 @@ class GuardService:
             raise Denied("read_only", f"node {self.name} is a read-only replica; send writes to the primary", 421)
         try:
             self._cur_env = {**body, "sig": env["sig"]} if cmd in ("enroll_device", "create_user", "set_role") else None
-            result = fn(dev_id, dev["user"], user["role"], args)
+            # a "limited" device (a phone, say) acts as a plain member whatever its user\'s role is, so stealing it
+            # gives no admin power
+            eff_role = "member" if dev.get("limited") else user["role"]
+            result = fn(dev_id, dev["user"], eff_role, args)
             if cmd not in READ_ONLY_CMDS:   # reads change no state; the audit log alone records them
                 self._persist()
         except Denied:
@@ -667,6 +693,18 @@ class GuardService:
             self.nonces = {k: v for k, v in self.nonces.items() if v[0] >= cutoff}
 
     # --------------------------------------------------------------- commands
+
+    def _require_settled(self, dev: str, what: str) -> None:
+        """Powers that can lock the owner out (removing an admin's device, disabling a user, changing a role) wait
+        until the acting device has existed for COOLING_OFF_S. Root and operator-recovered devices are exempt. A thief
+        who mints a new admin and device therefore cannot use them at once, and the owner can still disable them."""
+        d = self.state["devices"].get(dev, {})
+        if d.get("enrolled_proof") is None:
+            return
+        if self.clock() - float(d.get("enrolled_at", 0)) < COOLING_OFF_S:
+            self._deny("authz.denied", dev, {"device": dev, "action": what, "why": "device enrolled too recently"},
+                       "cooling_off", f"this device was enrolled less than {COOLING_OFF_S // 60} minutes ago; it cannot "
+                                      f"{what} yet (an older admin device can)")
 
     def _require_admin(self, actor: str, role: str, what: str) -> None:
         if role != "admin":
@@ -710,6 +748,8 @@ class GuardService:
         old = self.state["users"][target]["role"]
         if old == new_role:
             return {"ok": True, "unchanged": True}
+        if old == "admin":
+            self._require_settled(dev, "set_role")
         if old == "admin" and sum(
             1 for u in self.state["users"].values() if u["role"] == "admin" and u["active"]
         ) <= 1:
@@ -737,15 +777,20 @@ class GuardService:
             raise Denied("bad_request", "unknown or disabled user", 400)
         if new_dev in self.state["devices"]:
             raise Denied("conflict", "device id already used (ids are never reused)", 409)
+        limited = args.get("limited", False)
+        if not isinstance(limited, bool):
+            raise Denied("bad_request", "limited must be true or false", 400)
         self.state["devices"][new_dev] = {
             "user": target, "status": "active", "sign_pub": c.b64e(sp), "kem_pub": c.b64e(kp),
             "enrolled_at": self.clock(), "enrolled_proof": getattr(self, "_cur_env", None),
         }
+        if limited:
+            self.state["devices"][new_dev]["limited"] = True
         for f in self.state["files"].values():
             if target in f["acl"]:
                 f["needs_rotation"] = True   # the new device holds no wrap until the owner or an admin re-keys
         self._log("device.enrolled", dev, {"user": target, "device": new_dev, "by": user,
-                                              "fingerprint": fp, "verified": expect is not None})
+                                              "fingerprint": fp, "verified": expect is not None, "limited": limited})
         return {"ok": True, "fingerprint": fp, "verified": expect is not None}
 
     def _remove(self, dev, user, role, args, kind):
@@ -758,13 +803,16 @@ class GuardService:
                        "forbidden", "only the owner or an admin may do this")
         if d["status"] != "active":
             return {"ok": True, "already": d["status"]}
-        # an admin device is removed by ANOTHER admin user, or offline by the operator (`kig revoke-device`); a stolen
-        # admin device therefore cannot race the owner by revoking the owner's other devices
-        if self.state["users"].get(d["user"], {}).get("role") == "admin" and d["user"] == user and target != dev:
-            self._deny("authz.denied", dev, {"device": dev, "action": kind, "target": target,
-                                             "why": "an admin's device is removed by another admin or by the operator"},
-                       "forbidden", "an admin device can only be removed by another admin user, or offline by the operator "
-                                    "(kig revoke-device)")
+        # An admin-capable device (not "limited") of an admin is removed only by ANOTHER admin user whose device has
+        # existed for a while, or offline by the operator (`kig revoke-device`). A stolen device of any kind therefore
+        # cannot lock the owner out. A limited device (a phone) can be removed by its own user from any device.
+        if self.state["users"].get(d["user"], {}).get("role") == "admin" and not d.get("limited") and target != dev:
+            if role != "admin" or d["user"] == user:
+                self._deny("authz.denied", dev, {"device": dev, "action": kind, "target": target,
+                                                 "why": "an admin device is removed by another admin or by the operator"},
+                           "forbidden", "an admin device can only be removed by another admin user, or offline by the "
+                                        "operator (kig revoke-device); enrol phones with --limited so the admin can remove them")
+            self._require_settled(dev, kind)
         # the last active device of the last active admin can never be removed, or nobody could enrol or recover
         still = [x for x, v in self.state["devices"].items() if x != target and v["status"] == "active"
                  and self.state["users"].get(v["user"], {}).get("role") == "admin" and self.state["users"][v["user"]]["active"]]
@@ -776,8 +824,7 @@ class GuardService:
         pending = sorted(k for k, f in self.state["files"].items() if f["needs_rotation"])
         self._log(f"device.{'lost' if kind == 'lost' else 'revoked'}", dev,
                   {"device": target, "user": d["user"], "by": user,
-                   "reason": str(args.get("reason", ""))[:200], "files_needing_rotation": pending,
-                   "admin_sibling": role == "admin" and d["user"] == user and target != dev})
+                   "reason": str(args.get("reason", ""))[:200], "files_needing_rotation": pending})
         return {"ok": True, "files_needing_rotation": pending}
 
     def cmd_revoke_device(self, dev, user, role, args):
@@ -794,6 +841,8 @@ class GuardService:
             raise Denied("bad_request", "unknown user", 400)
         if target == user:
             raise Denied("conflict", "cannot disable yourself", 409)
+        if u["role"] == "admin":
+            self._require_settled(dev, "disable_user")
         self._record_revoked(self._devices_of(target))
         u["active"] = False
         for d in self._devices_of(target):
@@ -942,7 +991,7 @@ class GuardService:
         fid = _valid_id(args.get("file_id"))
         if fid in self.state["files"]:
             raise Denied("conflict", "file exists; use rotate", 409)
-        tomb = self.state["tombs"].get(fid)
+        tomb = self._tombs().get(fid)
         epoch = 1
         if tomb is not None:
             if role != "admin" and tomb["owner"] != user:
@@ -1055,8 +1104,8 @@ class GuardService:
             self._deny("authz.denied", dev, {"device": dev, "file": fid, "action": "delete_file"},
                        "forbidden", "only the owner or an admin may delete this file")
         gone = [h for h in (f["ct"], (f.get("prev") or {}).get("ct")) if h]
-        mine = sum(1 for t in self.state["tombs"].values() if t["owner"] == f["owner"])
-        if mine >= MAX_USER_TOMBS and fid not in self.state["tombs"]:
+        mine = sum(1 for t in self._tombs().values() if t["owner"] == f["owner"])
+        if mine >= MAX_USER_TOMBS and fid not in self._tombs():
             raise Denied("quota", "this owner has deleted too many files; ask the operator to raise the limit", 429)
         self._log("file.deleted", dev, {"file": fid, "owner": f["owner"], "by": user, "epoch": f["epoch"]})
         self._apply_delete(fid, f["owner"], f["epoch"])
@@ -1070,10 +1119,10 @@ class GuardService:
 
     def _apply_delete(self, fid: str, owner: str, epoch: int) -> bool:
         """Remove the file and keep a small record (owner, highest epoch) so the id can only come back at a later epoch."""
-        if fid not in self.state["files"] and fid in self.state["tombs"]:
+        if fid not in self.state["files"] and fid in self._tombs():
             return False
         self.state["files"].pop(fid, None)
-        self.state["tombs"][fid] = {"owner": owner, "epoch": epoch}
+        self._tombs()[fid] = {"owner": owner, "epoch": epoch}
         return True
 
     def root_fingerprints(self) -> list[str]:
@@ -1338,6 +1387,7 @@ class GuardService:
                 if isinstance(generation, bool) or not isinstance(generation, int):
                     raise ValueError
                 new_state = json.loads(json.dumps(snap["body"]["state"]))
+                new_state.setdefault("tombs", {})
                 blobs = snap["body"].get("blobs", {})
                 if not isinstance(blobs, dict) or isinstance(version, bool) or not isinstance(version, int):
                     raise ValueError

@@ -92,6 +92,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--root-fingerprint", action="append", default=[], help="fingerprint of a root device every enrolment must trace back to (repeatable; or KIG_ROOT_FINGERPRINTS, comma separated)")
     p.add_argument("--key", required=True, help="the admin's own key file")
     p.add_argument("--pub", required=True, help="path to the JSON printed by `keygen` on the new device")
+    p.add_argument("--limited", action="store_true", help="enrol a device that acts as a plain member even for an admin user (use this for phones: the admin can remove it from the laptop, and stealing it gives no admin power)")
     g = p.add_mutually_exclusive_group(required=True)
     g.add_argument("--expect-fingerprint", help="fingerprint read aloud or shown on the new device")
     g.add_argument("--unverified", action="store_true", help="enrol without comparing a fingerprint (recorded as unverified)")
@@ -258,6 +259,8 @@ def main(argv: list[str] | None = None) -> int:
             print(f"refused: the pub file must hold exactly {sorted(allowed)} as strings", file=sys.stderr)
             return 2
         args = dict(raw)
+        if a.limited:
+            args["limited"] = True
         if a.expect_fingerprint is not None:
             if not a.expect_fingerprint.strip():
                 print("refused: --expect-fingerprint is empty", file=sys.stderr)

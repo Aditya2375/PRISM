@@ -23,14 +23,9 @@ def main(story: bool = False) -> int:
         admin = Client(laptop, svc.handle)
         admin.call("create_user", user="ravi", role="member")
         phone, rlap = Device.generate("asha-phone", "asha"), Device.generate("ravi-laptop", "ravi")
-        for d in (phone, rlap):
-            admin.call("enroll_device", **d.public_args())
+        admin.call("enroll_device", **phone.public_args(), limited=True)     # a phone acts as a plain member, so the laptop can remove it
+        admin.call("enroll_device", **rlap.public_args())
         asha_phone, ravi = Client(phone, svc.handle), Client(rlap, svc.handle)
-        # an admin's device is removed by ANOTHER admin (or offline by the operator), never by a sibling device
-        admin.call("create_user", user="omar", role="admin")
-        odev = Device.generate("omar-laptop", "omar")
-        admin.call("enroll_device", **odev.public_args())
-        omar = Client(odev, svc.handle)
 
         step(1, "Normal operation: Asha stores a file shared with Ravi; both read it")
         admin.put_file("payroll-2026", b"salary table: confidential", acl=["asha", "ravi"])
@@ -38,7 +33,7 @@ def main(story: bool = False) -> int:
         print("   phone reads:", asha_phone.fetch("payroll-2026", auto_rotate=False).decode())
 
         step(2, "Security control: Asha's phone is reported lost")
-        print("  ", json.dumps(omar.call("report_lost", device="asha-phone", reason="stolen")))
+        print("  ", json.dumps(admin.call("report_lost", device="asha-phone", reason="stolen")))
 
         step(3, "Whoever holds the phone tries again with a valid signature")
         try:
@@ -74,20 +69,16 @@ def cluster_report() -> dict:
         boss, phone = Device.generate("asha-laptop", "asha"), Device.generate("asha-phone", "asha")
         cl.primary.bootstrap("asha", "asha-laptop", boss.sign_pub, boss.kem_pub)
         cadmin = cl.writer(boss)
-        cadmin.call("enroll_device", **phone.public_args())
-        cadmin.call("create_user", user="omar", role="admin")
-        odev = Device.generate("omar-laptop", "omar")
-        cadmin.call("enroll_device", **odev.public_args())
-        oadmin = cl.writer(odev)
+        cadmin.call("enroll_device", **phone.public_args(), limited=True)
         cl.bus.drain(); cl.sync_all()
-        oadmin.call("report_lost", device="asha-phone", reason="stolen")
+        cadmin.call("report_lost", device="asha-phone", reason="stolen")
         t = cl.measure_revocation(phone)
         cadmin.put_file("doc", b"x", acl=["asha"])
         cl.bus.drain(); cl.sync_all()
         spare = Device.generate("asha-spare", "asha")
-        cadmin.call("enroll_device", **spare.public_args()); cl.bus.drain(); cl.sync_all()
+        cadmin.call("enroll_device", **spare.public_args(), limited=True); cl.bus.drain(); cl.sync_all()
         cl.bus.partitioned.add("node-c")
-        oadmin.call("report_lost", device="asha-spare", reason="stolen")
+        cadmin.call("report_lost", device="asha-spare", reason="stolen")
         try:
             cl.client(spare, "node-c").call("whoami"); inside = "served"
         except Denied as e:

@@ -108,7 +108,13 @@ def create_web_app(client: Client, token: str, cors_origins: list[str] | None = 
 
     @app.get("/me")
     def me():
-        return run(lambda: client.call("whoami"))
+        def go():
+            out = dict(client.call("whoami"))
+            # shown on the enrol screen so an admin can read the root out loud to the person who pins it
+            out["fingerprint"] = device_fingerprint(client.dev.device_id, client.dev.user, client.dev.sign_pub, client.dev.kem_pub)
+            out["pinned_roots"] = list(client._root_list())
+            return out
+        return run(go)
 
     @app.get("/files")
     def files():
@@ -178,6 +184,10 @@ def create_web_app(client: Client, token: str, cors_origins: list[str] | None = 
     async def enroll(request: Request):
         d = await body(request)
         args = _pub(d)
+        if d.get("limited") not in (None, True, False):
+            raise Denied("bad_request", "limited must be true or false", 400)
+        if d.get("limited") is True:
+            args["limited"] = True
         expect, unverified = d.get("expect_fingerprint"), d.get("unverified", False)
         if unverified is True:
             if expect is not None:

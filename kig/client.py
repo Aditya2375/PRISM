@@ -117,6 +117,8 @@ class Client:
         self._roots: list[str] | None = list(roots) if roots else None
         self.tofu_root = tofu_root
         self._admin_users: set[str] = set()                   # users shown to be admins (cache)
+        self._neg_dir: Any = None                              # directory the negative memo belongs to
+        self._neg: set[tuple[str, frozenset]] = set()
         self._trusted: dict[str, tuple[str, str, str]] = {}   # device -> (user, sign_pub, kem_pub) proven to the root
         self.dev, self.send, self.clock, self.aud = device, transport, clock, audience
         self.state_path = Path(state_path) if state_path else None
@@ -283,7 +285,7 @@ class Client:
         if fp not in roots:
             roots.append(fp)
             self._save_pins()
-        self._trusted.clear(); self._admin_users.clear()
+        self._trusted.clear(); self._admin_users.clear(); self._neg_dir = None
 
     def remove_root(self, fingerprint: str) -> None:
         """Forget one pinned root (for example one pinned from a hostile first contact). Local trust record only."""
@@ -293,7 +295,7 @@ class Client:
             raise c.CryptoError("that fingerprint is not pinned here")
         roots.remove(fp)
         self._save_pins()
-        self._trusted.clear(); self._admin_users.clear()
+        self._trusted.clear(); self._admin_users.clear(); self._neg_dir = None
 
     @staticmethod
     def _env_body(env: dict[str, Any]) -> dict[str, Any]:
@@ -306,6 +308,18 @@ class Client:
             return True
         if depth > 16 or user in busy:
             return False
+        # a user shown NOT to be an admin in this very directory is not searched for again (an attacker could otherwise
+        # make every check re-walk the same long chains); the memo is dropped with the directory or the roots
+        if self._neg_dir is not dirm:
+            self._neg_dir, self._neg = dirm, set()
+        if (user, busy) in self._neg:
+            return False
+        r = self._is_admin_walk(user, dirm, depth, busy)
+        if not r:
+            self._neg.add((user, busy))
+        return r
+
+    def _is_admin_walk(self, user: str, dirm: dict[str, Any], depth: int, busy: frozenset) -> bool:
         for did, e in dirm.items():
             if not isinstance(e, dict) or e.get("user") != user:
                 continue
@@ -396,7 +410,7 @@ class Client:
         if not roots:
             raise c.CryptoError("could not find the root behind this device's enrolment")
         self.pins["roots"] = roots                     # tentative: our own chain must verify against it
-        self._trusted.clear(); self._admin_users.clear()
+        self._trusted.clear(); self._admin_users.clear(); self._neg_dir = None
         try:
             self._prove(self.dev.device_id, dirm)
         except c.CryptoError:

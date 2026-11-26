@@ -25,14 +25,9 @@ def build(tmp_path, delay=lambda n: 0.0):
     admin = cl.writer(alice)
     admin.call("create_user", user="bob")
     phone, bob = Device.generate("alice-phone", "alice"), Device.generate("bob-laptop", "bob")
-    for d in (phone, bob):
-        admin.call("enroll_device", **d.public_args())
+    admin.call("enroll_device", **phone.public_args(), limited=True)      # a phone is a limited device: the laptop can remove it
+    admin.call("enroll_device", **bob.public_args())
     admin.put_file("report", b"payroll", acl=["alice", "bob"])
-    # an admin's device is removed by another admin, never by a sibling device
-    admin.call("create_user", user="omar", role="admin")
-    omar = Device.generate("omar-laptop", "omar")
-    admin.call("enroll_device", **omar.public_args())
-    cl.ops = cl.writer(omar)
     cl.bus.drain()
     cl.sync_all()
     return cl, admin, alice, phone, bob
@@ -50,7 +45,7 @@ def test_revocation_enforced_on_every_node_and_timed(tmp_path):
     rnd = random.Random(1)
     cl, admin, alice, phone, bob = build(tmp_path, delay=lambda n: rnd.uniform(0.01, 0.06))
     time.sleep(0.02)
-    cl.ops.call("report_lost", device="alice-phone", reason="lost")
+    admin.call("report_lost", device="alice-phone", reason="lost")
     t = cl.measure_revocation(phone)
     assert set(t) == {"node-a", "node-b", "node-c"}
     assert max(t.values()) < 3.0, t                       # last node enforced well inside a second
@@ -64,7 +59,7 @@ def test_revocation_enforced_on_every_node_and_timed(tmp_path):
 
 def test_owner_can_reenrol_after_loss_and_others_keep_access(tmp_path):
     cl, admin, alice, phone, bob = build(tmp_path)
-    cl.ops.call("report_lost", device="alice-phone")
+    admin.call("report_lost", device="alice-phone")
     cl.bus.drain()
     new_phone = Device.generate("alice-phone-2", "alice")
     admin.call("enroll_device", **new_phone.public_args())
@@ -81,7 +76,7 @@ def test_partitioned_node_enforces_after_pull_and_never_unrevokes(tmp_path):
     cl, admin, alice, phone, bob = build(tmp_path)
     time.sleep(0.02)
     cl.bus.partitioned.add("node-c")
-    cl.ops.call("report_lost", device="alice-phone")
+    admin.call("report_lost", device="alice-phone")
     cl.bus.drain()
     assert code(cl.client(phone, "node-b").fetch, "report") == "revoked"
     # the partitioned node has not heard yet: this is the documented exposure window

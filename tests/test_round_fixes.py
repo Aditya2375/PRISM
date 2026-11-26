@@ -594,21 +594,94 @@ def test_i5_first_use_pin_requires_our_own_chain_to_verify(tmp_path):
     assert not bc.pins.get("roots")
 
 
-def test_i1_admin_device_cannot_be_removed_by_its_own_sibling_but_another_admin_can(tmp_path):
-    svc, laptop = boot(tmp_path / "d")
-    ac = Client(laptop, svc.handle)
+def test_i1_admin_device_cannot_be_removed_by_its_own_sibling_but_another_old_enough_admin_can(tmp_path):
+    clock = type("C", (), {"t": 1_800_000_000.0, "__call__": lambda self: self.t})()
+    svc, laptop = boot(tmp_path / "d", clock=clock)
+    ac = Client(laptop, svc.handle, clock)
     phone = Device.generate("adm-phone", "adm")
-    ac.call("enroll_device", **phone.public_args())
+    ac.call("enroll_device", **phone.public_args())                  # admin-capable phone
     ac.call("create_user", user="adm2", role="admin")
     d2 = Device.generate("adm2-1", "adm2")
     ac.call("enroll_device", **d2.public_args())
     for kind in ("revoke_device", "report_lost"):
         with pytest.raises(Denied) as e:
-            Client(phone, svc.handle).call(kind, device="adm-1")
+            Client(phone, svc.handle, clock).call(kind, device="adm-1")
         assert e.value.code == "forbidden"
-    assert svc.state["devices"]["adm-1"]["status"] == "active"
-    Client(d2, svc.handle).call("report_lost", device="adm-1")      # another admin user may
+    with pytest.raises(Denied) as e:                                 # a brand-new admin device waits (K1)
+        Client(d2, svc.handle, clock).call("report_lost", device="adm-1")
+    assert e.value.code == "cooling_off"
+    clock.t += S.COOLING_OFF_S + 1
+    Client(d2, svc.handle, clock).call("report_lost", device="adm-1")
     assert svc.state["devices"]["adm-1"]["status"] == "lost"
+
+
+def test_k1_stolen_admin_device_cannot_mint_an_admin_that_locks_the_owner_out(tmp_path):
+    clock = type("C", (), {"t": 1_800_000_000.0, "__call__": lambda self: self.t})()
+    svc, laptop = boot(tmp_path / "d", clock=clock)
+    ac = Client(laptop, svc.handle, clock)
+    phone = Device.generate("adm-phone", "adm")
+    ac.call("enroll_device", **phone.public_args())
+    clock.t += S.COOLING_OFF_S + 1
+    thief = Client(phone, svc.handle, clock)                                # stolen admin-capable device
+    thief.call("create_user", user="evil", role="admin")
+    evil = Device.generate("evil-1", "evil")
+    thief.call("enroll_device", **evil.public_args())
+    ec = Client(evil, svc.handle, clock)
+    for dev in ("adm-1", "adm-phone"):
+        with pytest.raises(Denied) as e:
+            ec.call("revoke_device", device=dev)
+        assert e.value.code == "cooling_off"
+    with pytest.raises(Denied):
+        ec.call("disable_user", user="adm")
+    # the owner, still in control, shuts the intruder out
+    ac.call("disable_user", user="evil")
+    with pytest.raises(Denied):
+        ec.call("whoami")
+    assert svc.state["devices"]["adm-1"]["status"] == "active"
+
+
+def test_y1_limited_phone_can_be_removed_by_a_sole_admin_and_gives_a_thief_no_admin_power(tmp_path):
+    svc, laptop = boot(tmp_path / "d")
+    ac = Client(laptop, svc.handle)
+    phone = Device.generate("adm-phone", "adm")
+    ac.call("enroll_device", **phone.public_args(), limited=True)
+    pc = Client(phone, svc.handle)
+    for cmd, kw in (("create_user", {"user": "x", "role": "admin"}), ("enroll_device", Device.generate("z", "adm").public_args()),
+                    ("revoke_device", {"device": "adm-1"}), ("disable_user", {"user": "adm"})):
+        with pytest.raises(Denied) as e:
+            pc.call(cmd, **kw)
+        assert e.value.code == "forbidden"
+    ac.call("report_lost", device="adm-phone", reason="lost")          # the sole admin, from the laptop
+    assert svc.state["devices"]["adm-phone"]["status"] == "lost"
+    with pytest.raises(Denied):
+        ac.call("enroll_device", **Device.generate("q", "adm").public_args(), limited="yes")
+
+
+def test_k2_alert_line_cannot_be_forged_through_a_device_id(tmp_path, capsys):
+    import time
+    svc, laptop = boot(tmp_path / "d"); time.sleep(0.05)
+    evil_id = "x\nALERT critical R9-ALL-CLEAR: no action needed \x1b[2J"[:64]
+    for i in range(3):
+        env = {"cmd": "whoami", "device": evil_id, "ts": time.time(), "nonce": f"n{i}", "args": {},
+               "sig": c.b64e(b"\0" * 3309)}
+        with pytest.raises(Denied):
+            svc.handle(env, source="203.0.113.9")
+    err = capsys.readouterr().err
+    assert "\x1b" not in err
+    assert not any(l.startswith("ALERT critical R9") for l in err.split("\n"))
+    assert all(l.startswith("ALERT ") and l.count("\n") == 0 for l in err.splitlines() if l)
+
+
+def test_k3_state_from_before_the_tombstone_section_still_works(tmp_path):
+    svc, adm = boot(tmp_path / "d")
+    ac = Client(adm, svc.handle)
+    del svc.state["tombs"]
+    ac.put_file("f", b"x", acl=["adm"])
+    ac.call("delete_file", file_id="f")
+    assert svc.state["tombs"]["f"]["owner"] == "adm"
+    # a data dir written by the previous version keeps its deleted ids
+    svc2 = GuardService(tmp_path / "d", clock=svc.clock)
+    assert "f" in svc2.state["tombs"]
 
 
 def test_i1_offline_operator_revoke_is_logged_and_prints_nothing_secret(tmp_path):
@@ -657,3 +730,20 @@ def test_w4_bench_spreads_files_over_owners(monkeypatch):
     monkeypatch.setattr(bench, "PER_OWNER", 5)
     out = bench.run(12, payload=64)
     assert out["files"] == 12
+
+
+def test_x_is_admin_does_not_walk_the_same_failed_chain_twice(tmp_path):
+    dev = Device.generate("x-1", "x")
+    bc = Client(dev, lambda e: {}, roots=["ab" * 16])
+    dirm = {"x-1": {"user": "bob", "sign_pub": c.b64e(dev.sign_pub), "kem_pub": c.b64e(dev.kem_pub), "status": "active",
+                    "proof": None, "role_proof": None}}
+    calls = []
+    real = Client._is_admin_walk
+    Client._is_admin_walk = lambda self, *a, **k: (calls.append(a[0]), real(self, *a, **k))[1]
+    try:
+        assert [bc._is_admin("bob", dirm, 0, frozenset()) for _ in range(3)] == [False] * 3
+    finally:
+        Client._is_admin_walk = real
+    assert calls.count("bob") == 1
+    bc.add_root("cd" * 16)                                       # new trust input: the memo is dropped
+    assert bc._neg_dir is None

@@ -5,6 +5,7 @@ from fastapi.testclient import TestClient
 
 from kig import crypto as c
 from kig.api import create_app
+import kig.service as S
 from kig.client import Client, Device
 from kig.service import GuardService
 from kig.webapi import HEADER, create_web_app
@@ -42,6 +43,7 @@ def second_admin(a, transport, clock, name="omar"):
     a.call("create_user", user=name, role="admin")
     d = Device.generate(f"{name}-laptop", name)
     a.call("enroll_device", **d.public_args())
+    clock.tick(S.COOLING_OFF_S + 1)
     return Client(d, transport, clock)
 
 
@@ -317,3 +319,12 @@ def test_delete_file_owner_and_admin_only_and_strict_body(tmp_path):
     assert wa.post("/files/delete", json={"file_id": "ravi-note-2"}, headers=H).status_code >= 400   # already gone
     assert "ravi-note-2" not in svc.state["files"]
     assert any(e["type"] == "file.deleted" for e in svc.audit.entries)
+
+
+def test_me_shows_this_devices_fingerprint_and_pinned_roots(tmp_path):
+    from kig.client import device_fingerprint
+    svc, _, _, a, r, p, adm, *_ = world(tmp_path)
+    me = web(a).get("/me", headers=H).json()
+    assert me["fingerprint"] == device_fingerprint(adm.device_id, adm.user, adm.sign_pub, adm.kem_pub)
+    assert isinstance(me["pinned_roots"], list)
+    assert me["user"] == "asha" and set(me) >= {"user", "device", "role"}

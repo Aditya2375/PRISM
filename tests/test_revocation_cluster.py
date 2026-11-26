@@ -16,7 +16,7 @@ NODES = ("node-a", "node-b", "node-c")
 
 
 def _revoke(cl, admin):
-    cl.ops.call("report_lost", device="alice-phone", reason="lost")
+    admin.call("report_lost", device="alice-phone", reason="lost")
     cl.bus.drain()
 
 
@@ -149,8 +149,8 @@ def test_random_partitions_restarts_and_replays_never_unrevoke(tmp_path, seed):
         op = rnd.choice(["enroll_revoke", "partition", "heal", "restart", "pull", "replay_snap", "replay_cert", "tick"])
         if op == "enroll_revoke":
             d = Device.generate(f"tmp-{seed}-{i}", "alice")
-            admin.call("enroll_device", **d.public_args())
-            cl.ops.call("revoke_device", device=d.device_id)
+            admin.call("enroll_device", **d.public_args(), limited=True)
+            admin.call("revoke_device", device=d.device_id)
             devices.append(d)
         elif op == "partition":
             cl.bus.partitioned.add(rnd.choice(["node-b", "node-c"]))

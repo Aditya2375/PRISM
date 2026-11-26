@@ -268,7 +268,8 @@ rename (content is never partial, but two writers racing at the same instant cou
 
 ## Round 5 changes (what the tests prove)
 
-* Admin device removal: only another admin user, or the offline `kig revoke-device`; refused for a sibling device of the same admin (`test_i1_admin_device_cannot_be_removed_by_its_own_sibling_but_another_admin_can`).
+* Admin-capable device removal: only another admin user whose device is at least 15 minutes old, or the offline `kig revoke-device` (`test_i1_*`, `test_k1_*`). Limited devices (`--limited`, for phones) act as plain members, so a sole admin removes a lost phone from the laptop (`test_y1_*`). Residual: a stolen admin-capable device is an admin until it is removed offline, and a device minted by it can act after 15 minutes if nobody disabled that user.
+* The alert line on stderr is JSON-escaped, so ids and user text cannot forge a line (`test_k2_*`). State from before the tombstone section is migrated on load (`test_k3_*`).
 * Deleted ids are a journalled section with one small record each, so a create/delete loop does not grow every journal line (`test_j1_deleted_ids_do_not_bloat_every_journal_line`); capped per owner (`test_j1_tombstones_are_capped_per_owner`); only the owner or an admin can bring an id back, at the next epoch (`test_j2_*`, `test_i3_*`).
 * A crash after the delete is logged but before it is saved still deletes on restart (`test_j4_*`).
 * Explicit root fingerprints are used alone and `kig unpin-root` removes a hostile pin (`test_j3_*`).

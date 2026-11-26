@@ -1,6 +1,7 @@
 import pytest
 
 from kig.client import Client, Device
+import kig.service as S
 from kig.service import Denied, GuardService
 
 
@@ -43,6 +44,7 @@ class World:
             self.admin.call("create_user", user="ops", role="admin")
             d = Device.generate("ops-laptop", "ops")
             self.admin.call("enroll_device", **d.public_args())
+            self.clock.tick(S.COOLING_OFF_S + 1)         # a freshly enrolled device cannot remove admins yet
             self._ops = Client(d, self.svc.handle, self.clock)
         return self._ops
 

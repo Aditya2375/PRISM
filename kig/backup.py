@@ -388,6 +388,7 @@ def restore(path: str | Path, dest_dir: str | Path, backup_pub: bytes, backup_se
         entries = payload["audit"]
         _atomic_write(part / "audit.jsonl", "".join(json.dumps(e, sort_keys=True) + "\n" for e in entries).encode())
         st = dict(payload["state"])
+        st.setdefault("tombs", {})
         if entries:
             last = entries[-1]
             _atomic_write(part / "audit.head", json.dumps({"seq": last["seq"], "hash": last["hash"], "sig": last["sig"]}).encode())
