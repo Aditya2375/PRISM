@@ -66,12 +66,15 @@ def test_unknown_suite_is_refused_everywhere(w, tmp_path):
 
 
 def test_backup_with_other_suite_is_refused(w, tmp_path):
+    from test_backup import retar
     pub, sec = c.kem_keygen()
     out = tmp_path / "x.bak"
     b.create(w.svc, pub, out)
-    doc = json.loads(out.read_bytes())
+    import tarfile
+    with tarfile.open(out) as tf:
+        doc = json.loads(tf.extractfile("manifest.json").read())
     doc["suite"] = "PRISM-0:old"
-    out.write_bytes(json.dumps(doc).encode())
+    retar(out, {"manifest.json": json.dumps(doc).encode()})
     with pytest.raises(b.BackupError, match="suite"):
         b.verify_and_open(out, pub, sec, w.svc.pub)
 
