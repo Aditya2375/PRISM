@@ -11,7 +11,7 @@ def test_healthy_directory_passes(w, capsys):
 
 def test_corrupt_blob_reported(w):
     h = next(iter(w.svc.blob_hashes()))
-    p = w.svc._blob_path(h); p.write_bytes(p.read_bytes()[:-1] + b"\x00")
+    p = w.svc._blob_path(h); raw = bytearray(p.read_bytes()); raw[-1] ^= 1; p.write_bytes(bytes(raw))
     rows = doctor.check(w.svc.dir)
     assert ("FAIL", "blobs") in [(r[0], r[1]) for r in rows]
 

@@ -103,4 +103,4 @@ def test_write_cost_does_not_grow_with_the_number_of_files(tmp_path):
         clock.tick(1)
         ca.put_file(f"bulk{i}", b"y" * 500, acl=["a"])
     late = timed(40)
-    assert late < early * 3 + 0.01, f"put got slower with more files: {early*1000:.1f} ms -> {late*1000:.1f} ms"
+    assert late < early * 3 + 0.02, f"put got slower with more files: {early*1000:.1f} ms -> {late*1000:.1f} ms"

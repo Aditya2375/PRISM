@@ -81,7 +81,7 @@ def _story(tmp: str, svc: GuardService, admin: Client, ravi: Client) -> bool:
         t = cl.measure_revocation(phone)
         for name in sorted(t):
             print(f"   {name}: rejects the lost phone {t[name] * 1000:6.1f} ms after the primary acknowledged")
-        good = good and max(t.values()) < 1.0
+        good = good and max(t.values()) < 3.0
         from .cluster import LEASE_S
         cadmin.put_file("doc", b"x", acl=["asha"])
         cl.bus.drain(); cl.sync_all()

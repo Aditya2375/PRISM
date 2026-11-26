@@ -309,7 +309,7 @@ def test_ciphertext_blobs_are_content_addressed_verified_and_collected(w, tmp_pa
     assert len(blobs) == 2                      # current + previous only; older ones removed
     # silent bit rot or tampering on disk fails closed and is logged
     cur = tmp_path / "data" / "blobs" / w.svc.state["files"]["report"]["ct"][:2] / w.svc.state["files"]["report"]["ct"]
-    cur.write_bytes(cur.read_bytes()[:-1] + b"\x00")
+    raw = bytearray(cur.read_bytes()); raw[-1] ^= 1; cur.write_bytes(bytes(raw))
     assert code(w.bob.fetch, "report", False) == "storage_corrupt"
     assert any(e["type"] == "storage.corrupt" for e in w.svc.audit.entries)
 
