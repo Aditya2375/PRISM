@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import argparse
+from pathlib import Path
 import json
 import sys
 import urllib.error
@@ -44,6 +45,13 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--expect-head", default=None, help="head hash recorded elsewhere; detects tail truncation")
     p = sub.add_parser("doctor", help="check a data directory: state, audit chain, blobs, permissions")
     p.add_argument("--data", required=True)
+    p = sub.add_parser("enroll", help="enrol a new device from its public-key JSON, after comparing its fingerprint")
+    p.add_argument("--url", required=True)
+    p.add_argument("--key", required=True, help="the admin's own key file")
+    p.add_argument("--pub", required=True, help="path to the JSON printed by `keygen` on the new device")
+    g = p.add_mutually_exclusive_group(required=True)
+    g.add_argument("--expect-fingerprint", help="fingerprint read aloud or shown on the new device")
+    g.add_argument("--unverified", action="store_true", help="enrol without comparing a fingerprint (recorded as unverified)")
     p = sub.add_parser("rotate-pending", help="re-key every file flagged needs_rotation that this device may rotate")
     p.add_argument("--url", required=True)
     p.add_argument("--key", required=True)
@@ -58,7 +66,6 @@ def main(argv: list[str] | None = None) -> int:
         from .doctor import run
         return run(a.data)
     if a.op == "verify-log":
-        from pathlib import Path
         from .audit import check_log, first_bad_seq
         d = Path(a.data)
         pub = (d / "server_sign.pub").read_bytes()
@@ -85,8 +92,21 @@ def main(argv: list[str] | None = None) -> int:
             print(f"bootstrapped admin {a.user} with device {a.device}; key file {a.out}")
         else:
             print(json.dumps(dev.public_args()))
+            print(f"fingerprint (read this to the admin): {dev.fingerprint()}", file=sys.stderr)
         return 0
     cl = Client(Device.load(a.key), _post(a.url))
+    if a.op == "enroll":
+        args = json.loads(Path(a.pub).read_text())
+        if a.expect_fingerprint:
+            args["expect_fingerprint"] = a.expect_fingerprint
+        try:
+            r = cl.call("enroll_device", **args)
+        except Denied as e:
+            print(f"denied: {e.code}: {e.reason}", file=sys.stderr)
+            return 2
+        print(f"enrolled {args['device']} for {args['user']}; fingerprint {r.get('fingerprint')}"
+              + ("" if a.expect_fingerprint else " (UNVERIFIED)"))
+        return 0
     if a.op == "rotate-pending":
         try:
             todo = [f for f in cl.call("list_files")["files"] if f["needs_rotation"]]

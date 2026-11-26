@@ -174,3 +174,11 @@ check and the audit chain run there. On the original it then hashes every refere
 `python -m kig.demo` is the lost-device story. `python -m kig.demo --story` adds a blob tamper, an edited audit
 copy, a crash in the middle of a rotation with recovery on restart, and a claim-to-evidence table. It exits 1 if
 any of those checks fails. Not in it yet: the three-node revocation timings.
+
+## Enrolling a device from the command line
+
+On the new device: `python -m kig.cli keygen --user U --device D --out key.json > pub.json`. The command prints the
+public keys to stdout and the fingerprint to stderr. The new device's owner reads the fingerprint to the admin over
+a channel the server does not control. The admin runs
+`python -m kig.cli enroll --url URL --key admin.json --pub pub.json --expect-fingerprint FP`. Case, dashes and
+spaces in FP do not matter. `--unverified` is the only way to skip the comparison, and the audit entry then says so.
