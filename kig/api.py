@@ -24,12 +24,45 @@ MAX_BODY = MAX_FILE_BYTES * 2
 
 
 def _operator_token(data_dir: Path) -> str:
-    p = data_dir / "operator.token"
-    if not p.exists():
-        fd = os.open(p, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-        with os.fdopen(fd, "w") as fh:
-            fh.write(secrets.token_urlsafe(32))
-    return p.read_text().strip()
+    """Read the operator token, or make a fresh one when it is missing, empty, short or readable by others.
+
+    A token file left empty by a crash must never mean "no token". A new token is written to a random temp
+    file, then linked into place (a concurrent first start cannot overwrite the winner) or renamed over a bad one.
+    """
+    from . import vault
+    p = Path(data_dir) / "operator.token"
+    for _ in range(3):
+        try:
+            st = os.lstat(p)
+            import stat as _st
+            if _st.S_ISREG(st.st_mode) and not st.st_mode & 0o077:
+                tok = p.read_text().strip()
+                if len(tok) >= 32 and tok.isascii() and tok.isprintable() and " " not in tok:
+                    return tok
+            bad = True
+        except FileNotFoundError:
+            bad = False
+        new = secrets.token_urlsafe(32)
+        try:
+            vault.write_atomic(p, new.encode(), 0o600, exclusive=not bad)
+        except FileExistsError:
+            continue                              # another start-up won the race; read what it wrote
+        return new
+    raise RuntimeError("cannot establish an operator token")
+
+
+async def read_capped(request: Request, limit: int) -> bytes:
+    """Read a request body without ever holding more than `limit` bytes: Content-Length first, then count the stream."""
+    cl = request.headers.get("content-length")
+    if cl is not None:
+        if not cl.isdigit() or int(cl) > limit:
+            raise Denied("too_large", "request body too large", 413)
+    buf = bytearray()
+    async for chunk in request.stream():
+        buf += chunk
+        if len(buf) > limit:
+            raise Denied("too_large", "request body too large", 413)
+    return bytes(buf)
 
 
 def _check_origin(o: str) -> None:
@@ -92,9 +125,7 @@ def create_app(data_dir: str | Path, service: GuardService | None = None,
 
     @app.post("/v1/command")
     async def command(request: Request) -> dict[str, Any]:
-        raw = await request.body()
-        if len(raw) > MAX_BODY:
-            raise Denied("too_large", "request body too large", 413)
+        raw = await read_capped(request, MAX_BODY)
         try:
             import json
 

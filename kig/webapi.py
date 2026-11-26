@@ -26,7 +26,7 @@ from fastapi.responses import JSONResponse, Response
 
 from . import crypto as c
 from . import vault
-from .api import _check_origin
+from .api import _check_origin, read_capped
 from .client import Client, Device, device_fingerprint
 from .service import MAX_FILE_BYTES, Denied
 
@@ -92,9 +92,7 @@ def create_web_app(client: Client, token: str, cors_origins: list[str] | None = 
             return _tr_error(e)
 
     async def body(request: Request) -> dict[str, Any]:
-        raw = await request.body()
-        if len(raw) > MAX_BODY:
-            raise Denied("too_large", "request body too large", 413)
+        raw = await read_capped(request, MAX_BODY)
         import json
         try:
             d = json.loads(raw)

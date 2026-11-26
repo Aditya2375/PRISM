@@ -25,6 +25,9 @@ def _entry_hash(body: dict[str, Any]) -> str:
     return c.sha256_hex(c.canonical(body))
 
 
+ENTRY_FIELDS = {"seq", "ts", "prev", "type", "actor", "data", "hash", "sig"}
+
+
 def verify_chain(entries: list[dict[str, Any]], service_pub: bytes, sig_from: int = 0) -> tuple[bool, str]:
     """Check linkage, hashes and signatures. Returns (ok, reason).
 
@@ -35,6 +38,8 @@ def verify_chain(entries: list[dict[str, Any]], service_pub: bytes, sig_from: in
     prev = GENESIS
     for i, e in enumerate(entries):
         try:
+            if not isinstance(e, dict) or set(e) != ENTRY_FIELDS:
+                raise KeyError("fields")        # an unsigned extra field is a change the signature does not cover
             body = {k: e[k] for k in ("seq", "ts", "prev", "type", "actor", "data")}
             sig = c.b64d(e["sig"])
         except (KeyError, c.CryptoError):
@@ -122,13 +127,8 @@ class AuditLog:
 
     def _write_anchor(self, entry: dict[str, Any]) -> None:
         import json
-        tmp = self.ckpt_path.with_suffix(".head.tmp")
-        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-        with os.fdopen(fd, "w") as fh:
-            fh.write(json.dumps({"seq": entry["seq"], "hash": entry["hash"], "sig": entry["sig"]}))
-            fh.flush()
-            os.fsync(fh.fileno())
-        os.replace(tmp, self.ckpt_path)
+        from . import vault
+        vault.write_atomic(self.ckpt_path, json.dumps({"seq": entry["seq"], "hash": entry["hash"], "sig": entry["sig"]}).encode())
 
     def _load(self) -> list[dict[str, Any]]:
         import json

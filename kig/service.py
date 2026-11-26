@@ -32,6 +32,9 @@ SKEW_S = 30
 GRACE_S = 30  # rotation cutoff: the previous key version stays readable this long for in-flight transfers
 MAX_FILE_BYTES = 5 * 1024 * 1024
 READ_ONLY_CMDS = {"fetch", "whoami", "eligible", "list_files", "my_devices", "my_activity"}
+MAX_USER_FILES = 1_000            # per owner
+MAX_USER_BYTES = 256 * 1024 * 1024   # per owner, ciphertext on disk including the kept previous version
+MAX_TOTAL_BYTES = 4 * 1024 ** 3      # whole service
 MAX_FILES = 10_000                 # per service, bounds state size and write cost
 DEVICE_RATE_PER_MIN = 240          # authenticated requests per device per minute
 SOURCE_FAIL_PER_MIN = 1200         # failed (unauthenticated) requests per source address per minute
@@ -39,7 +42,7 @@ UNAUTH_LOG_PER_SOURCE_MIN = 3      # signed audit lines for unauthenticated fail
 UNAUTH_LOG_TOTAL_MIN = 30          # ... and in total per minute; the rest are counted and summarised
 POST_AUTH_EXTRA_LOG_MIN = 300      # after a valid signature: the first line per device+class is always logged, extras share this
 STATE_CHANGING_TYPES = {"user.created", "role.changed", "device.enrolled", "file.created", "file.rotate_prepared",
-                       "file.rotated", "device.revoked", "device.lost", "user.disabled", "service.bootstrapped"}
+                       "file.rotated", "file.deleted", "device.revoked", "device.lost", "user.disabled", "service.bootstrapped"}
 MUTATING_TYPES = {"user.created", "role.changed", "device.enrolled", "file.created", "service.bootstrapped"}
 ROLES = ("admin", "member")
 _CMD_RE = re.compile(r"[a-z_]{1,64}")
@@ -67,15 +70,23 @@ def _valid_id(x: Any) -> str:
 
 
 def _atomic_write(path: Path, data: bytes, mode: int = 0o600, hook: Callable[[], None] | None = None) -> None:
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, mode)
-    with os.fdopen(fd, "wb") as fh:
-        fh.write(data)
-        fh.flush()
-        os.fsync(fh.fileno())
-    if hook:
-        hook()
-    os.replace(tmp, path)
+    # a random exclusive temp name that never follows a symlink: a planted link cannot redirect the write
+    tmp = path.with_name(f".{path.name}.{os.urandom(6).hex()}.tmp")
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), mode)
+    try:
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(data)
+            fh.flush()
+            os.fsync(fh.fileno())
+        if hook:
+            hook()
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
     dfd = os.open(path.parent, os.O_RDONLY)
     try:
         os.fsync(dfd)
@@ -97,7 +108,7 @@ def hmac_compare(a: str, b: str) -> bool:
 class GuardService:
     def __init__(self, data_dir: str | Path, clock: Callable[[], float] = time.time,
                  name: str = "primary", read_only: bool = False, lease_s: float | None = None,
-                 mono: Callable[[], float] = time.monotonic, keystore=None):
+                 mono: Callable[[], float] = time.monotonic, keystore=None, pin_path: str | Path | None = None):
         self.keystore = keystore                   # optional kig.keystore.KeyStore for the signing key
         self.name = name
         self.mono = mono                           # the lease uses a monotonic clock, so a wall-clock step cannot matter
@@ -107,6 +118,7 @@ class GuardService:
         self.read_only = read_only
         self.dir = Path(data_dir)
         self.dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+        self._secure_dir()
         self.clock = clock
         self._lock = threading.RLock()
         self.crash_at: str | None = None  # fault injection: name of a crash point
@@ -118,6 +130,8 @@ class GuardService:
         self.state: dict[str, Any] = self._load_state()
         self._check_not_truncated()
         self._check_journal_not_behind_audit()
+        self.pin_path = Path(pin_path or os.environ.get("KIG_PIN_FILE") or "") if (pin_path or os.environ.get("KIG_PIN_FILE")) else None
+        self._check_pin()
         self.detector = Detector()
         self.locks: dict[str, float] = {}  # kept for alert bookkeeping; authentication is never blocked by it
         rep_state = self.state.get("_replica", {})
@@ -293,6 +307,42 @@ class GuardService:
             raise StateCorrupt(f"state is behind the audit log by {len(tail)} state-changing entries; the journal or "
                                "snapshot lost acknowledged commits. Restore from a verified backup")
 
+    def _secure_dir(self) -> None:
+        """The data directory holds the signing key and every blob: owner-only. Tighten it, or refuse if we cannot."""
+        st = self.dir.stat()
+        if st.st_mode & 0o077:
+            try:
+                os.chmod(self.dir, 0o700)
+            except OSError:
+                raise RuntimeError(f"data directory {self.dir} is accessible to other users and cannot be tightened") from None
+
+    def _check_pin(self) -> None:
+        """Optional rollback guard. If a pin file (kept OUTSIDE the data directory, ideally on other storage) says the
+        log once had N entries ending in a given hash, refuse to start on anything older or different."""
+        if self.pin_path is None or not self.pin_path.exists():
+            return
+        try:
+            pin = json.loads(self.pin_path.read_text())
+            n, h = int(pin["len"]), str(pin["head"])
+        except (ValueError, KeyError, TypeError, OSError):
+            raise RuntimeError("the pin file is unreadable; refusing to start without its rollback record") from None
+        ents = self.audit.entries
+        if len(ents) < n or (n and ents[n - 1]["hash"] != h):
+            raise RuntimeError(f"the audit log is older than, or differs from, the pinned head ({n} entries); "
+                               "refusing to start. The data directory may have been rolled back.")
+
+    def _write_pin(self) -> None:
+        if self.pin_path is not None and not self.read_only:
+            from . import vault
+            ents = self.audit.entries
+            old = 0
+            try:
+                old = int(json.loads(self.pin_path.read_text())["len"])
+            except (OSError, ValueError, KeyError, TypeError):
+                pass
+            if len(ents) >= old:
+                vault.write_atomic(self.pin_path, json.dumps({"len": len(ents), "head": self.audit.head}).encode())
+
     def _persist(self) -> None:
         if self.read_only:
             self.state["_replica"] = {"snapshot_version": self.snapshot_version,
@@ -301,6 +351,7 @@ class GuardService:
         self.state["applied"] = len(self.audit.entries)
         self.state["audit_head"] = self.audit.head
         self.store.commit(self.state)
+        self._write_pin()
 
     def _replay_detector(self) -> None:
         """Rebuild detector memory from the audit log after a restart."""
@@ -669,6 +720,12 @@ class GuardService:
                        "forbidden", "only the owner or an admin may do this")
         if d["status"] != "active":
             return {"ok": True, "already": d["status"]}
+        # the last active device of the last active admin can never be removed, or nobody could enrol or recover
+        still = [x for x, v in self.state["devices"].items() if x != target and v["status"] == "active"
+                 and self.state["users"].get(v["user"], {}).get("role") == "admin" and self.state["users"][v["user"]]["active"]]
+        if not still:
+            raise Denied("conflict", "this is the last active admin device; enrol another admin device first "
+                                     "(or use the offline recovery command)", 409)
         self._record_revoked([target])
         self._apply_remove_device(target, kind)
         pending = sorted(k for k, f in self.state["files"].items() if f["needs_rotation"])
@@ -798,6 +855,38 @@ class GuardService:
                 "writer_user": dev["user"] if dev else "", "enrollment": dev.get("enrolled_proof") if dev else None,
                 "role_proof": (self.state["users"].get(dev["user"]) or {}).get("role_proof") if dev else None}
 
+    def _blob_size(self, h: str | None) -> int:
+        try:
+            return self._blob_path(h).stat().st_size if h else 0
+        except OSError:
+            return 0
+
+    def _check_quota(self, owner: str, new_bytes: int, new_file: bool, replacing: dict[str, Any] | None = None) -> None:
+        """Per-owner and service-wide limits, so one member cannot use up everyone's budget."""
+        mine_n, mine_b, total_b = 0, 0, 0
+        for f in self.state["files"].values():
+            b = self._blob_size(f["ct"]) + self._blob_size((f.get("prev") or {}).get("ct"))
+            total_b += b
+            if f["owner"] == owner:
+                mine_n += 1
+                mine_b += b
+        if replacing is not None:       # a rotation drops the old previous version and keeps the current one as previous
+            drop = self._blob_size((replacing.get("prev") or {}).get("ct"))
+            mine_b -= drop; total_b -= drop
+        if new_file and mine_n >= MAX_USER_FILES:
+            raise Denied("quota", "this user has reached the file limit", 429)
+        if mine_b + new_bytes > MAX_USER_BYTES:
+            raise Denied("quota", "this user has reached the storage limit", 429)
+        if total_b + new_bytes > MAX_TOTAL_BYTES:
+            raise Denied("quota", "the service storage limit is reached", 429)
+
+    @staticmethod
+    def _check_share(role: str, user: str, acl: list[str], already: list[str]) -> None:
+        """A file lands in another person's list without their say, so only an admin may add other users."""
+        extra = [u for u in acl if u != user and u not in already]
+        if extra and role != "admin":
+            raise Denied("forbidden", "only an admin may share a file with another user", 403)
+
     def cmd_put_file(self, dev, user, role, args):
         fid = _valid_id(args.get("file_id"))
         if fid in self.state["files"]:
@@ -807,8 +896,11 @@ class GuardService:
             raise Denied("bad_request", "creator must be in acl", 400)
         if len(self.state["files"]) >= MAX_FILES:
             raise Denied("quota", "file limit reached", 429)
+        self._check_share(role, user, acl, [])
         commit = self._check_commit(args.get("commit"))
-        ct = self._store_blob(self._check_blob(args.get("ciphertext")))
+        ct_raw = self._check_blob(args.get("ciphertext"))
+        self._check_quota(user, len(ct_raw), True)
+        ct = self._store_blob(ct_raw)
         wraps = self._check_wraps(args.get("wraps"), acl)
         manifest = self._check_manifest(dev, fid, 1, acl, user, commit, args.get("manifest_sig"))
         self.state["files"][fid] = {
@@ -881,6 +973,48 @@ class GuardService:
                 "manifest": self._manifest_out(prev.get("manifest")),
                 "acl": prev.get("acl", f["acl"]), "needs_rotation": True, "grace_remaining_s": round(GRACE_S - age, 1)}
 
+    def cmd_delete_file(self, dev, user, role, args):
+        """The owner or an admin can remove a file and its stored ciphertext (for example one that cannot be opened)."""
+        fid = _valid_id(args.get("file_id"))
+        f = self.state["files"].get(fid)
+        if f is None:
+            raise Denied("not_found", "no such file", 404)
+        if role != "admin" and f["owner"] != user:
+            self._deny("authz.denied", dev, {"device": dev, "file": fid, "action": "delete_file"},
+                       "forbidden", "only the owner or an admin may delete this file")
+        gone = [h for h in (f["ct"], (f.get("prev") or {}).get("ct")) if h]
+        del self.state["files"][fid]
+        self._persist()
+        self._log("file.deleted", dev, {"file": fid, "owner": f["owner"], "by": user, "epoch": f["epoch"]})
+        self._persist()
+        live = self.blob_hashes()
+        for h in gone:
+            if h not in live:
+                self._blob_path(h).unlink(missing_ok=True)
+        return {"ok": True}
+
+    def recover_admin(self, user: str, device: str, sign_pub: bytes, kem_pub: bytes) -> str:
+        """Offline operator recovery: enrol a new device for an existing active admin user. Needs the data directory,
+        so it is a local operator action, and it is logged as one. Returns the device fingerprint."""
+        from .client import device_fingerprint
+        with self._lock:
+            user, device = _valid_id(user), _valid_id(device)
+            u = self.state["users"].get(user)
+            if not u or not u["active"] or u["role"] != "admin":
+                raise Denied("bad_request", "recovery needs an existing, active admin user", 400)
+            if device in self.state["devices"]:
+                raise Denied("conflict", "device id already used (ids are never reused)", 409)
+            fp = device_fingerprint(device, user, sign_pub, kem_pub)
+            self.state["devices"][device] = {"user": user, "status": "active", "sign_pub": c.b64e(sign_pub),
+                                             "kem_pub": c.b64e(kem_pub), "enrolled_at": self.clock(), "enrolled_proof": None}
+            for f in self.state["files"].values():
+                if user in f["acl"]:
+                    f["needs_rotation"] = True
+            self._log("device.enrolled", "operator", {"user": user, "device": device, "by": "operator",
+                                                      "fingerprint": fp, "verified": True, "recovery": True})
+            self._persist()
+            return fp
+
     def cmd_rotate(self, dev, user, role, args):
         fid = _valid_id(args.get("file_id"))
         f = self._file_for(dev, user, role, fid, "rotate")
@@ -905,8 +1039,10 @@ class GuardService:
             acl = self._acl(args, user)
             if f["owner"] not in acl and role != "admin":
                 raise Denied("bad_request", "owner must stay in acl", 400)
+            self._check_share(role, user, acl, f["acl"])
         commit = self._check_commit(args.get("commit"))
         ct_raw = self._check_blob(args.get("ciphertext"))
+        self._check_quota(f["owner"], len(ct_raw), False, replacing=f)
         wraps = self._check_wraps(args.get("wraps"), acl)
         manifest = self._check_manifest(dev, fid, f["epoch"] + 1, acl, f["owner"], commit, args.get("manifest_sig"))
         old_acl = f["acl"]

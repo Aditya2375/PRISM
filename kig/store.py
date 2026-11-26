@@ -411,15 +411,23 @@ class StateStore:
 
 
 def _atomic_write(path: Path, data: bytes, mode: int = 0o600, hook: Callable[[], None] | None = None) -> None:
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, mode)
-    with os.fdopen(fd, "wb") as fh:
-        fh.write(data)
-        fh.flush()
-        os.fsync(fh.fileno())
-    if hook:
-        hook()
-    os.replace(tmp, path)
+    # a random exclusive temp name that never follows a symlink: a planted link cannot redirect the write
+    tmp = path.with_name(f".{path.name}.{os.urandom(6).hex()}.tmp")
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), mode)
+    try:
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(data)
+            fh.flush()
+            os.fsync(fh.fileno())
+        if hook:
+            hook()
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
     dfd = os.open(path.parent, os.O_RDONLY)
     try:
         os.fsync(dfd)

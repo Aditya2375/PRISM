@@ -56,6 +56,11 @@ def main(argv: list[str] | None = None) -> int:
     q.add_argument("--shares", nargs="+", required=True)
     q.add_argument("--out", required=True)
     q.add_argument("--force", action="store_true", help="replace an existing output file")
+    p = sub.add_parser("recover-admin", help="offline: enrol a fresh device for an existing admin whose devices are all lost")
+    p.add_argument("--data", required=True)
+    p.add_argument("--user", required=True)
+    p.add_argument("--device", required=True, help="new device id (never used before)")
+    p.add_argument("--out", required=True, help="where to write the new device key file")
     p = sub.add_parser("doctor", help="check a data directory: state, audit chain, blobs, permissions")
     p.add_argument("--data", required=True)
     p = sub.add_parser("enroll", help="enrol a new device from its public-key JSON, after comparing its fingerprint")
@@ -116,6 +121,17 @@ def main(argv: list[str] | None = None) -> int:
         except OSError as e:
             print(f"refused: cannot read or write a file: {e.strerror or e}", file=sys.stderr)
             return 2
+        return 0
+    if a.op == "recover-admin":
+        dev = Device.generate(a.device, a.user)
+        try:
+            fp = GuardService(a.data).recover_admin(a.user, a.device, dev.sign_pub, dev.kem_pub)
+        except Denied as e:
+            print(f"refused: {e.reason}", file=sys.stderr)
+            return 2
+        dev.save(a.out)
+        print(f"enrolled new device {a.device} for admin {a.user}; key file {a.out}; fingerprint {fp}")
+        print("every file this user can read is flagged for re-keying; record this action: it is in the audit log as an operator action", file=sys.stderr)
         return 0
     if a.op == "doctor":
         from .doctor import run
