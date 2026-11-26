@@ -78,12 +78,42 @@ def diagram() -> Drawing:
     return d
 
 
+def header() -> Drawing:
+    W = 504
+    d = Drawing(W, 44)
+    d.add(Polygon([22, 6, 38, 34, 6, 34], fillColor=None, strokeColor=ACCENT, strokeWidth=2.2, strokeLineJoin=1))
+    d.add(Line(0, 21, 14, 20, strokeColor=INK, strokeWidth=1.8))
+    d.add(Line(30, 22, 44, 27, strokeColor=ACCENT, strokeWidth=1.4))
+    d.add(Line(31, 18, 44, 18, strokeColor=ACCENT, strokeWidth=1.4))
+    d.add(String(54, 20, "P.R.I.S.M.", fontName="Helvetica-Bold", fontSize=21, fillColor=INK))
+    d.add(String(54, 6, "Post-quantum Resilient Identity & Security Management", fontName="Helvetica", fontSize=8.6, fillColor=MUTED))
+    d.add(String(W, 22, "DevForge Yugaantar  |  Track 4  |  Trust, but verify", fontName="Helvetica-Bold", fontSize=8, fillColor=ACCENT, textAnchor="end"))
+    d.add(String(W, 10, "Team Do You Care  |  MIT  |  Python 3.12 and 3.13", fontName="Helvetica", fontSize=7.6, fillColor=MUTED, textAnchor="end"))
+    d.add(Line(0, 0, W, 0, strokeColor=ACCENT, strokeWidth=1))
+    return d
+
+
+def metrics() -> Table:
+    big = ParagraphStyle("big", fontName="Helvetica-Bold", fontSize=15, leading=17, textColor=ACCENT)
+    lab = ParagraphStyle("lab", fontName="Helvetica", fontSize=6.9, leading=8.3, textColor=MUTED)
+    cells = [("0.0", "false alerts per 1,000 benign requests (1,265 replayed)"),
+             ("F1 0.80", "precision 1.00, recall 0.67 over 9 labelled scenarios, 3 of them missed on purpose"),
+             ("35 to 50 ms", "revocation to the last of 3 real node processes; loopback, one clock"),
+             ("30 s | 0 | lease", "grace: rotation | revoked device | cut-off replica (2 s real, 5 s simulated)")]
+    t = Table([[Paragraph(a, big) for a, _ in cells], [Paragraph(b, lab) for _, b in cells]], colWidths=[43.5 * mm] * 4)
+    t.setStyle(TableStyle([("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#f2f6fa")), ("LINEAFTER", (0, 0), (-2, -1), 0.6, colors.white),
+                           ("LEFTPADDING", (0, 0), (-1, -1), 6), ("RIGHTPADDING", (0, 0), (-1, -1), 4),
+                           ("TOPPADDING", (0, 0), (-1, 0), 5), ("BOTTOMPADDING", (0, 0), (-1, 0), 0),
+                           ("TOPPADDING", (0, 1), (-1, 1), 1), ("BOTTOMPADDING", (0, 1), (-1, 1), 5), ("VALIGN", (0, 0), (-1, -1), "TOP")]))
+    return t
+
+
 def page1(video: str) -> list:
     f: list = []
-    f.append(P("P.R.I.S.M.", h1))
-    f.append(P("Post-quantum Resilient Identity &amp; Security Management. DevForge Yugaantar, Track 4 \"Trust, but verify\". "
-               f"Team Do You Care. Code: {REPO} (MIT, Python 3.12 and 3.13).", sub))
-    f.append(P("Unique selling point", h2))
+    f.append(header())
+    f.append(Spacer(1, 6))
+    f.append(metrics())
+    f.append(P("What it is, and what makes it different", h2))
     f.append(P("One workflow done fully and checked from outside: <b>a user shares an encrypted file across devices, a device is lost, "
                "its access is cut on every node, the file is re-keyed, an alert says who, where and why, and someone who does not "
                "trust the service can verify the record.</b> We chose depth over breadth. Every claim below is tied to a test or a "
@@ -129,6 +159,8 @@ def page1(video: str) -> list:
 
 def page2(video: str) -> list:
     f: list = [PageBreak()]
+    f.append(header())
+    f.append(Spacer(1, 4))
     f.append(P("One-page threat model", h1))
     f.append(P("Full version: THREAT_MODEL.md in the repository. Every limit below is stated, not hidden.", sub))
     rows = [
@@ -182,7 +214,18 @@ def page2(video: str) -> list:
         "Cross-service paths and mixed clock offsets are not handled.",
     ]:
         f.append(B(x, sbullet))
-    f.append(Spacer(1, 4))
+    f.append(P("Where each claim is checked", h2))
+    ev = [("Revocation across nodes, time to last node", "python -m kig.netcluster; tests/test_netcluster.py"),
+          ("Crash recovery, revoked stays revoked", "tests/test_crash_and_cutoff.py, tests/test_chaos.py (random kills, 12 seeds)"),
+          ("Backup integrity, damage refused", "tests/test_backup.py (200 single-byte flips all refused)"),
+          ("Log integrity, offline check", "verifier/prism_verify.py; tests/test_audit.py, tests/test_standalone_verifier.py"),
+          ("Detection: F1, time to alert, false alerts", "python -m kig.bench_detect; tests/test_bench_detect.py"),
+          ("Cryptography, known answers", "tests/test_crypto_proof.py and NIST vectors in tests/vectors/")]
+    t = Table([[P(a, cell), P(f"<i>{b}</i>", cell)] for a, b in ev], colWidths=[66 * mm, 108 * mm])
+    t.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "TOP"), ("LINEBELOW", (0, 0), (-1, -1), 0.4, colors.HexColor("#c9d1d9")),
+                           ("TOPPADDING", (0, 0), (-1, -1), 2), ("BOTTOMPADDING", (0, 0), (-1, -1), 2), ("LEFTPADDING", (0, 0), (-1, -1), 2)]))
+    f.append(t)
+    f.append(Spacer(1, 5))
     vt = video if video else "[5-minute demo video link: to be added]"
     link = f'<link href="{video}" color="#1f4e79"><u>{vt}</u></link>' if video else vt
     t = Table([[P(f"<b>5-minute demo video:</b> {link}", body)], [P(f"<b>Repository:</b> <link href=\"{REPO}\" color=\"#1f4e79\"><u>{REPO}</u></link> "
