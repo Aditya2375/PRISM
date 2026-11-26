@@ -33,6 +33,12 @@ label or hostile KDF parameters are all refused (`tests/test_vault.py`).
   devices that were still eligible. After the cutoff the node answers `key_version_retired`.
   A revoked device gets no grace.
 * A client remembers the newest version it has seen and refuses an older one (rollback check).
+  With `state_path` it persists this across restarts. The check is skipped only when the caller
+  passes an explicit `epoch=`; a server-sent grace field never bypasses it.
+* Only a file's owner or an admin can write or rotate it. ACL members read. Each version carries a
+  key-commitment tag (HMAC of the file key over file id and version), so a wrong or substituted
+  key is refused. A client auto-rotates only when the server says `can_rotate`.
+* Enrolling a device flags files shared with that user `needs_rotation`.
 
 ### Crash matrix (`tests/test_crash_and_cutoff.py`, `tests/test_chaos.py`)
 | Kill point | After restart |
@@ -49,8 +55,11 @@ kill points over 12 seeds.
 
 ## Revocation durability
 The revoked set is its own append-only file, fsynced before anything else and checked first. It is
-union-only: restoring an older state or backup cannot bring a device back. A torn last line is
-ignored because it was never acknowledged.
+union-only: restoring an older `state.json` cannot bring a device back, because the revoked set is
+re-applied at start-up. A torn last line is truncated at load (it was never acknowledged), so the
+next record is never glued to it. Restoring an older *backup* is guarded separately (see below);
+the file itself is not tamper-proof against someone who can rewrite the whole data directory.
+Replica fields (`snapshot_version`, `epoch_floor`) are persisted in the signed state.
 
 ## Storage
 * `state.json`: metadata and wrapped keys, signed with ML-DSA, written by temp file, fsync, atomic
@@ -66,7 +75,12 @@ Canonical payload (state, audit log, revoked set, blobs), sealed with a random A
 wrapped to the backup public key, then ML-DSA signed together with a manifest holding a monotonic
 counter, payload hash and audit head. Restore verifies signature, tag, hashes, audit chain and blob
 hashes before writing anything, and only into an empty directory. An older valid backup is refused
-unless `allow_older` is set, and the live revoked set is always unioned in. 200 random single-byte
+unless `allow_older` is set. Restore needs evidence for two guards, or an explicit `accept_rollback`:
+the counter (`min_counter`, the highest counter you know, or `live_dir`) and the live revoked log
+(`live_revoked_log`). **Record each backup counter outside the data directory**; without it nothing
+can tell a stale backup from a fresh one. The service key is opened and matched to its public key
+before anything is written; the directory is built as `dest.partial` and renamed, and removed on
+failure. A restored `revoked.log` is timestamped with the backup creation time. 200 random single-byte
 flips are all rejected (`tests/test_backup.py`).
 
 ## Limits
@@ -74,8 +88,14 @@ flips are all rejected (`tests/test_backup.py`).
 * The server is trusted for the device directory (no out-of-band fingerprint check).
 * Python cannot wipe key material from memory. A passphrase in the environment is visible to the
   process owner. A hardware keystore would be the production answer.
-* Any member of a file's ACL can rotate it, which includes replacing its content. Per-file write
-  roles are not implemented.
+* Write access is owner or admin only; there are no per-user write grants. The client trusts the ACL
+  and device directory the server returns, so a malicious server could add recipients to future wraps.
+* Any active device of a user can revoke all other devices of that user, by design.
+* Audit head anchor (`audit.head`, fsynced per append) detects accidental truncation. Against an
+  attacker who rewrites the whole directory, keep the head outside it and use `verify-log --expect-head`.
+* Failed authentication never locks anyone out. R2 and R3 alert only; per-device (240/min) and
+  per-source (1200/min) rate limits, a 10,000 file cap and a per-minute log budget bound abuse.
+* Backup and restore build the payload in memory (about 2.7x the data size).
 * Every mutation rewrites `state.json`, so write cost grows with the number of files. Fine for the
   prototype scale measured above, not for millions of files.
 * Single host. The cluster nodes in `kig/cluster.py` are in-process simulations with their own data

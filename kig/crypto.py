@@ -3,7 +3,8 @@
 No custom primitives. Everything is composed from vetted implementations:
 
 * ML-KEM-768 (FIPS 203), ML-DSA-65 (FIPS 204), the X25519+ML-KEM-768 hybrid HPKE
-  suite, HKDF-SHA256 and AES-256-GCM, all from ``cryptography``.
+  suite (HKDF-SHA256 with ChaCha20-Poly1305 inside HPKE), and AES-256-GCM for file
+  content, vault files and backups, all from ``cryptography``.
 
 Key establishment is hybrid through the library's standard HPKE suite, so it
 stays safe unless both X25519 and ML-KEM are broken.

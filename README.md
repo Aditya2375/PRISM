@@ -67,14 +67,14 @@ Commands for `POST /v1/command` (`cmd` field): `whoami`, `eligible`, `create_use
 | Rule | Severity | Fires when | Response |
 | --- | --- | --- | --- |
 | R1-REVOKED-DEVICE-USE | critical | a validly signed request arrives from a revoked or lost device | denied, no key material released |
-| R2-REPLAY | high | a nonce is reused | denied; that device-and-source pair locked 300 s |
-| R3-AUTH-FAILURE-BURST | high | 3 failed authentications for one device from one source in 60 s | that device-and-source pair locked 300 s |
+| R2-REPLAY | high | a nonce is reused | denied and alerted when it comes from another source or with a different body; an identical retry from the same source is refused quietly. Nobody is locked out |
+| R3-AUTH-FAILURE-BURST | high | 3 failed authentications for one device from one source in 60 s | alert only. Nobody is locked out; logging is rate bounded and summarised as `auth.failures_suppressed` |
 | R4-PRIVILEGE-ESCALATION | high, or critical if the user's first device was enrolled under 10 min earlier | a user becomes admin | recorded; demote with `set_role` |
 
 ## Layout
 
 ```
-kig/crypto.py    hybrid HPKE KEM, ML-DSA, AES-GCM (cryptography package only)
+kig/crypto.py    hybrid HPKE KEM, ML-DSA, AES-256-GCM (cryptography package only)
 kig/vault.py     passphrase-sealed key files
 kig/backup.py    signed encrypted backups, verify before restore
 kig/audit.py     signed hash-chained log + standalone verifier
