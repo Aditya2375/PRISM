@@ -109,7 +109,7 @@ def test_search_is_deterministic_and_reports_that_it_was_bounded(monkeypatch):
     import json
     monkeypatch.setattr(t, "RANDOM_TRIES", 40)
     sh = t.split(os.urandom(32), 9, 18)
-    for i in range(9):                      # 9 bad of 18: 9 honest shares, exactly k
+    for i in range(10):                     # 10 bad of 18: only 8 honest, fewer than k, so no subset can ever work
         d = json.loads(sh[i]); raw = os.urandom(32)
         from kig import crypto as c
         d["share"] = c.b64e(raw); d["fp"] = t._fp(d["i"], raw); sh[i] = json.dumps(d).encode()

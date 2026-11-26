@@ -32,6 +32,20 @@ def _operator_token(data_dir: Path) -> str:
     return p.read_text().strip()
 
 
+def _check_origin(o: str) -> None:
+    """An origin is scheme://host[:port] and nothing else: no path, slash, query, fragment or credentials."""
+    from urllib.parse import urlsplit
+    try:
+        u = urlsplit(o)
+        port_ok = u.port is None or u.port > 0
+    except ValueError:
+        raise ValueError(f"not an origin: {o!r}") from None
+    if ("*" in o or u.scheme not in ("http", "https") or not u.hostname or not port_ok or u.username or u.password
+            or u.path or u.query or u.fragment or o.endswith(("/", "?", "#")) or o != o.strip()):
+        raise ValueError(f"KIG_CORS_ORIGINS must list exact origins such as http://localhost:5173 (no path, slash, query, "
+                         f"fragment or *), got {o!r}")
+
+
 def create_app(data_dir: str | Path, service: GuardService | None = None,
                trust_proxy: bool | None = None,
                cors_origins: list[str] | None = None) -> FastAPI:
@@ -49,10 +63,13 @@ def create_app(data_dir: str | Path, service: GuardService | None = None,
     app = FastAPI(title="Key Identity Guard", version="0.1.0", docs_url=None, redoc_url=None)
     app.state.service = svc
     if cors_origins is None:                      # off unless asked for: a page on another origin is otherwise blocked
-        cors_origins = [o.strip() for o in os.environ.get("KIG_CORS_ORIGINS", "").split(",") if o.strip()]
+        raw_env = os.environ.get("KIG_CORS_ORIGINS", "")
+        cors_origins = [o.strip() for o in raw_env.split(",") if o.strip()]
+        if raw_env and not cors_origins:
+            raise ValueError("KIG_CORS_ORIGINS is set but lists no origin; unset it or give exact origins")
     if cors_origins:
-        if any(o == "*" or "*" in o or not o.startswith(("http://", "https://")) for o in cors_origins):
-            raise ValueError("KIG_CORS_ORIGINS must list exact origins such as http://localhost:5173, never *")
+        for o in cors_origins:
+            _check_origin(o)
         from fastapi.middleware.cors import CORSMiddleware
         app.add_middleware(CORSMiddleware, allow_origins=cors_origins, allow_credentials=False,
                            allow_methods=["GET", "POST"], allow_headers=["content-type", "x-kig-operator-token"])
