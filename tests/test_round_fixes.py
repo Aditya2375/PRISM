@@ -444,3 +444,38 @@ def test_w2_delete_is_never_committed_without_its_audit_entry(tmp_path):
 def test_w3_odd_content_length_is_a_clean_4xx(tmp_path):
     cl = TestClient(create_app(tmp_path), raise_server_exceptions=False)
     assert cl.post("/v1/command", content=b"{}", headers={"content-length": b"\xb2"}).status_code < 500
+
+
+def test_w1_chain_signed_by_a_plain_member_is_refused_with_a_clear_reason(tmp_path):
+    svc, adm = boot(tmp_path / "d")
+    ac, bob = member(svc, adm)
+    evil = Device.generate("evil-dev", "adm")
+    forged = Client(bob, lambda env: {}).envelope("enroll_device", evil.public_args())     # a member signs an "enrolment"
+
+    def server(env, source="local"):
+        out = svc.handle(env, source)
+        if env["cmd"] == "eligible":
+            out = {"devices": {**out["devices"], "evil-dev": c.b64e(evil.kem_pub)}}
+        if env["cmd"] == "directory":
+            chain = ac.call("directory", devices=["bob-1"])["devices"]
+            out = {"devices": {**out["devices"], **chain, "evil-dev": {"user": "adm", "sign_pub": c.b64e(evil.sign_pub),
+                   "kem_pub": c.b64e(evil.kem_pub), "status": "active", "proof": forged, "role_proof": None}}}
+        return out
+    cl = Client(adm, server)
+    with pytest.raises(c.CryptoError) as e:
+        cl._recipients(["adm"])
+    assert "not shown to be an admin" in str(e.value)
+
+
+def test_w1_admin_made_by_an_admin_can_enrol_devices(tmp_path):
+    svc, adm = boot(tmp_path / "d")
+    ac = Client(adm, svc.handle)
+    ac.call("create_user", user="carol", role="admin")
+    carol = Device.generate("carol-1", "carol")
+    ac.call("enroll_device", **carol.public_args())
+    cc = Client(carol, svc.handle)
+    dave = Device.generate("dave-1", "adm")
+    cc.call("enroll_device", **dave.public_args())
+    cl = Client(adm, svc.handle)
+    cl.put_file("f", b"x", acl=["adm"])
+    assert Client(dave, svc.handle).fetch("f") == b"x"

@@ -115,6 +115,7 @@ class Client:
         self.verify_directory = verify_directory
         self._roots: list[str] | None = list(roots) if roots else None
         self.tofu_root = tofu_root
+        self._admin_users: set[str] = set()                   # users shown to be admins (cache)
         self._trusted: dict[str, tuple[str, str, str]] = {}   # device -> (user, sign_pub, kem_pub) proven to the root
         self.dev, self.send, self.clock, self.aud = device, transport, clock, audience
         self.state_path = Path(state_path) if state_path else None
@@ -271,8 +272,45 @@ class Client:
     def _env_body(env: dict[str, Any]) -> dict[str, Any]:
         return {k: env[k] for k in ("cmd", "device", "ts", "nonce", "args") + (("aud",) if "aud" in env else ())}
 
-    def _prove(self, dev_id: str, dirm: dict[str, Any], depth: int = 0) -> tuple[str, str, str]:
-        """Return (user, sign_pub, kem_pub) of a device if its enrolment chain ends at a pinned root, else raise."""
+    def _is_admin(self, user: str, dirm: dict[str, Any], depth: int, busy: frozenset) -> bool:
+        """A user is an admin if a pinned root device belongs to them, or if a `create_user` / `set_role` request for
+        them (role admin) is signed by a device of a user who is an admin (the directory carries that request)."""
+        if user in self._admin_users:
+            return True
+        if depth > 16 or user in busy:
+            return False
+        for did, e in dirm.items():
+            if not isinstance(e, dict) or e.get("user") != user:
+                continue
+            try:
+                fp = device_fingerprint(did, user, c.b64d(e["sign_pub"]), c.b64d(e["kem_pub"]))
+            except (KeyError, TypeError, c.CryptoError):
+                continue
+            if e.get("proof") is None and fp in self._root_list():
+                self._admin_users.add(user)
+                return True
+        for did, e in dirm.items():
+            if not isinstance(e, dict) or e.get("user") != user:
+                continue
+            env = e.get("role_proof")
+            try:
+                body = self._env_body(env)
+                signer = body["device"]
+                if not (body["cmd"] in ("create_user", "set_role") and body["args"]["user"] == user
+                        and body["args"].get("role") == "admin" and signer != did):
+                    continue
+                suser, ssp, _ = self._prove(signer, dirm, depth + 1, busy | {user})
+                if self._is_admin(suser, dirm, depth + 1, busy | {user}) and \
+                        c.verify(c.b64d(ssp), "cmd", c.canonical(body), c.b64d(env["sig"])):
+                    self._admin_users.add(user)
+                    return True
+            except (KeyError, TypeError, ValueError, c.CryptoError):
+                continue
+        return False
+
+    def _prove(self, dev_id: str, dirm: dict[str, Any], depth: int = 0, busy: frozenset = frozenset()) -> tuple[str, str, str]:
+        """Return (user, sign_pub, kem_pub) of a device if its enrolment chain ends at a pinned root and every signer
+        in it was an admin, else raise."""
         if dev_id in self._trusted:
             return self._trusted[dev_id]
         if depth > 16:
@@ -296,7 +334,10 @@ class Client:
                 ok = False
             if not ok:
                 raise c.CryptoError(f"the enrolment record for device {dev_id} does not match its keys")
-            _, ssp, _ = self._prove(signer, dirm, depth + 1)
+            suser, ssp, _ = self._prove(signer, dirm, depth + 1, busy)
+            if not self._is_admin(suser, dirm, depth + 1, busy):
+                raise c.CryptoError(f"the enrolment of device {dev_id} was signed by a device of {suser}, who is not "
+                                    "shown to be an admin")
             if not c.verify(c.b64d(ssp), "cmd", c.canonical(body), c.b64d(proof["sig"])):
                 raise c.CryptoError(f"the enrolment of device {dev_id} is not signed by a device the root vouches for")
         self._trusted[dev_id] = (user, sp, kp)

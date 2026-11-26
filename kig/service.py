@@ -1131,10 +1131,12 @@ class GuardService:
             if v is None or d in out:
                 continue
             proof = v.get("enrolled_proof")
+            rp = (self.state["users"].get(v["user"]) or {}).get("role_proof")
             out[d] = {"user": v["user"], "sign_pub": v["sign_pub"], "kem_pub": v["kem_pub"], "status": v["status"],
-                      "proof": proof}
-            if isinstance(proof, dict) and isinstance(proof.get("device"), str):
-                want.append(proof["device"])
+                      "proof": proof, "role_proof": rp}
+            for env in (proof, rp):
+                if isinstance(env, dict) and isinstance(env.get("device"), str):
+                    want.append(env["device"])
         return {"devices": out}
 
     def cmd_my_devices(self, dev, user, role, args):
