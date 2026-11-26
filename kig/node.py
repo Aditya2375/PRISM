@@ -215,9 +215,13 @@ class Node:
 
     def _install_snapshot(self) -> None:
         """Signed state first, then the missing blobs in pages of about PAGE_BYTES, each checked against its hash.
-        If the primary says a blob left its state meanwhile (files changed again), start over from a newer snapshot."""
+        If the primary says a blob left its state meanwhile (files changed again), start over from a newer snapshot; blobs
+        already fetched are kept (they are stored by hash), so each round only fetches what is new."""
         n = self.svc
-        for _attempt in range(4):
+        deadline = time.monotonic() + max(2.0, float(n.lease_s or LEASE_S))   # about one lease, then give up and fail closed
+        tries = 0
+        while tries < 2 or time.monotonic() < deadline:
+            tries += 1
             snap = _http("POST", self.primary_url + "/sync/snapshot", self.token, {"have": [], "meta": True}, timeout=10.0)
             try:
                 refs = n.blob_refs(snap["body"]["state"])

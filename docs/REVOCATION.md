@@ -95,7 +95,9 @@ Honest limits of this version:
 * After each snapshot a replica deletes ciphertext that its new state no longer refers to, so deleted files and
   superseded versions do not stay on its disk (`test_o1_replicas_delete_ciphertext_of_deleted_files_and_old_versions`).
   If files change while a replica is copying blobs, the primary reports the blobs that left its state and the replica starts
-  again from a newer snapshot (up to 4 tries, then `churn`) (`test_o2_blob_that_left_the_state_is_reported_as_gone_and_the_pull_recovers`).
+  again from a newer snapshot, keeping the blobs it already has, for about one lease (then `churn`) (`test_o2_blob_that_left_the_state_is_reported_as_gone_and_the_pull_recovers`).
+* Under very heavy write churn (several writers rewriting multi-megabyte files) a lagging replica can fail to catch up
+  within that time, answers `node_stale`, and recovers when the writes slow down. It fails closed; it never serves stale data.
 * A replica that cannot sync reports the reason in `/node/status` and prints a JSON line on stderr (`sync_failing`);
   there is no alerting beyond that. Client requests are not relayed, so a partition test cuts only the sync links.
 

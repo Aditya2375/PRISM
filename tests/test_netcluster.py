@@ -460,3 +460,26 @@ def test_a_recovered_peer_loses_its_old_error_in_status(nc, boss):
     assert until(lambda: nc.status("node-a")["errors"], timeout=10)            # the primary cannot push to node-c
     nc.heal("node-c")
     assert until(lambda: not nc.status("node-a")["errors"], timeout=10)
+
+
+def test_p1_more_than_four_churn_restarts_still_finish_within_the_time_budget(nc, boss, monkeypatch):
+    import kig.node as kn
+    from kig.service import GuardService
+    admin = nc.client(boss)
+    admin.put_file("doc", b"d" * 5000, acl=["ops"])
+    pub = (nc.base / "node-a" / "server_sign.pub").read_bytes()
+    rep = GuardService(nc.base / "probe4", name="probe4", read_only=True, lease_s=2.0)
+    node = kn.Node(rep, "replica", nc.token, primary_url=nc.url["node-a"], primary_pub=pub)
+    real = kn._http
+    seen = {"n": 0}
+
+    def churn(method, url, token, body=None, timeout=2.0):
+        out = real(method, url, token, body, timeout)
+        if "/sync/blobs" in url and seen["n"] < 6:
+            seen["n"] += 1
+            out = {"blobs": out["blobs"], "gone": ["0" * 64]}      # the primary says something moved, six times in a row
+        return out
+
+    monkeypatch.setattr(kn, "_http", churn)
+    node.pull()
+    assert seen["n"] == 6 and rep.last_sync is not None and "doc" in rep.state["files"]
