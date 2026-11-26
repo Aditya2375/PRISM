@@ -27,6 +27,7 @@ from . import crypto as c
 from . import vault
 from .audit import verify_chain
 from .service import GuardService, _atomic_write
+from .store import encode_snapshot, peek_meta
 
 
 class BackupError(Exception):
@@ -58,8 +59,8 @@ def _ctx(manifest: dict[str, Any]) -> bytes:
 
 def _generation(d: str | Path) -> int:
     try:
-        return int(json.loads((Path(d) / "state.json").read_text()).get("restore_generation", 0))
-    except (OSError, ValueError, AttributeError):
+        return int(peek_meta(d).get("restore_generation", 0))
+    except (ValueError, TypeError):
         return 0
 
 
@@ -71,8 +72,8 @@ def _counter(d: str | Path) -> int:
     except (OSError, ValueError):
         pass
     try:
-        best = max(best, int(json.loads((Path(d) / "state.json").read_text()).get("backup_counter", 0)))
-    except (OSError, ValueError, AttributeError):
+        best = max(best, int(peek_meta(d).get("backup_counter", 0)))
+    except (ValueError, TypeError):
         pass
     return best
 
@@ -276,8 +277,7 @@ def restore(path: str | Path, dest_dir: str | Path, backup_pub: bytes, backup_se
             bp = part / "blobs" / h[:2] / h
             bp.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
             _atomic_write(bp, c.b64d(b64))
-        st["_sig"] = c.b64e(c.sign(key_sec, "state", c.canonical({k: v for k, v in st.items()})))
-        _atomic_write(part / "state.json", json.dumps(st, sort_keys=True).encode())
+        _atomic_write(part / "state.json", encode_snapshot(st, key_sec, os.urandom(8).hex()))
         stamp = payload.get("_created", 0.0)
         _atomic_write(part / "revoked.log", "".join(f"{d}\t{stamp:.3f}\n" for d in sorted(revoked)).encode())
         _atomic_write(part / "backup.counter", str(max(counter, known or 0)).encode())

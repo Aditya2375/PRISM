@@ -25,6 +25,7 @@ from . import crypto as c
 from . import vault
 from .audit import AuditError, AuditLog
 from .detect import Alert, Detector
+from .store import StateStore, StoreCorrupt
 
 SKEW_S = 30
 GRACE_S = 30  # rotation cutoff: the previous key version stays readable this long for in-flight transfers
@@ -92,6 +93,7 @@ class GuardService:
         self.revoked: set[str] = self._load_revoked()
         self.audit = AuditLog(self.dir / "audit.jsonl", self._sec, self.pub)
         self._fresh = False
+        self.store = StateStore(self.dir, self._sec, self.pub, self._crash)
         self.state: dict[str, Any] = self._load_state()
         self._check_not_truncated()
         self.detector = Detector()
@@ -207,24 +209,16 @@ class GuardService:
         p = self.dir / "state.json"
         if p.exists():
             try:
-                st = json.loads(p.read_text())
-                sig = c.b64d(st.pop("_sig"))
-            except Exception:  # noqa: BLE001
-                raise StateCorrupt("state.json is unreadable or unsigned; restore from a verified backup") from None
-            if not c.verify(self.pub, "state", c.canonical(st), sig):
-                raise StateCorrupt("state.json failed its integrity signature; restore from a verified backup")
-            try:
-                c.require_suite(st, "state.json")
-            except c.CryptoError as e:
+                return self.store.load()
+            except (StoreCorrupt, c.CryptoError) as e:
                 raise StateCorrupt(str(e)) from None
-            return st
         blobs = self.dir / "blobs"
         leftovers = [x for x in (self.dir / "revoked.log", self.dir / "audit.jsonl") if x.exists() and x.stat().st_size]
         if leftovers or self.revoked or self.audit.entries or (blobs.exists() and any(blobs.rglob("*"))):
             raise StateCorrupt("state.json is missing but this directory holds service data; "
                                "restore from a verified backup instead of starting empty")
         self._fresh = True
-        return {"suite": c.SUITE, "users": {}, "devices": {}, "files": {}, "applied": 0}
+        return self.store.wrap({"suite": c.SUITE, "users": {}, "devices": {}, "files": {}, "applied": 0})
 
     def _check_not_truncated(self) -> None:
         n = int(self.state.get("applied", 0))
@@ -240,10 +234,7 @@ class GuardService:
                                       "epoch_floor": {k: list(v) for k, v in self.epoch_floor.items()}}
         self.state["applied"] = len(self.audit.entries)
         self.state["audit_head"] = self.audit.head
-        body = dict(self.state)
-        body["_sig"] = c.b64e(c.sign(self._sec, "state", c.canonical(self.state)))
-        _atomic_write(self.dir / "state.json", json.dumps(body, sort_keys=True).encode(),
-                      hook=lambda: self._crash("before_state_rename"))
+        self.store.commit(self.state)
 
     def _replay_detector(self) -> None:
         """Rebuild detector memory from the audit log after a restart."""
@@ -929,12 +920,13 @@ class GuardService:
             for raw in staged.values():
                 self._store_blob(raw)
             old_state, old_ver, old_gen = self.state, self.snapshot_version, self.snapshot_generation
-            self.state, self.snapshot_version, self.snapshot_generation = new_state, version, generation
+            self.state, self.snapshot_version, self.snapshot_generation = self.store.adopt(new_state), version, generation
             try:
                 self._enforce_revoked()
                 self._persist()
             except BaseException:
                 self.state, self.snapshot_version, self.snapshot_generation = old_state, old_ver, old_gen
+                self.store.force_snapshot = True
                 raise
             return True
 
