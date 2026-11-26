@@ -42,6 +42,9 @@ def main(argv: list[str] | None = None) -> int:
     p = sub.add_parser("verify-log", help="verify the signed key-event log offline")
     p.add_argument("--data", required=True)
     p.add_argument("--expect-head", default=None, help="head hash recorded elsewhere; detects tail truncation")
+    p = sub.add_parser("rotate-pending", help="re-key every file flagged needs_rotation that this device may rotate")
+    p.add_argument("--url", required=True)
+    p.add_argument("--key", required=True)
     p = sub.add_parser("call")
     p.add_argument("--url", required=True)
     p.add_argument("--key", required=True)
@@ -79,6 +82,21 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps(dev.public_args()))
         return 0
     cl = Client(Device.load(a.key), _post(a.url))
+    if a.op == "rotate-pending":
+        try:
+            todo = [f for f in cl.call("list_files")["files"] if f["needs_rotation"]]
+            skipped = [f["file_id"] for f in todo if not (f["can_rotate"] and f["has_key"])]
+            done = []
+            for f in todo:
+                if f["can_rotate"] and f["has_key"]:
+                    cl.fetch(f["file_id"])
+                    done.append(f["file_id"])
+        except Denied as e:
+            print(f"denied: {e.code}: {e.reason}", file=sys.stderr)
+            return 2
+        print(json.dumps({"rotated": done, "needs_an_owner_or_admin_with_a_key": skipped,
+                          "errors": cl.rotation_errors}, indent=2))
+        return 0 if not skipped and not cl.rotation_errors else 3
     try:
         print(json.dumps(cl.call(a.cmd, **json.loads(a.args)), indent=2))
     except Denied as e:
