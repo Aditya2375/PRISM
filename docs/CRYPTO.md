@@ -4,7 +4,7 @@ Suite id (written into every key file, vault file, state file and backup, refuse
 `PRISM-1:HPKE(MLKEM768-X25519,HKDF-SHA256,ChaCha20Poly1305)+AES-256-GCM+ML-DSA-65+scrypt`
 
 ## No custom crypto
-Every primitive is called from the pinned `cryptography>=50.0.2` package. P.R.I.S.M. does not implement a cipher,
+Every primitive is called from the pinned `cryptography==50.0.2` package (the event minimum is 50.0.2). P.R.I.S.M. does not implement a cipher,
 hash, KDF, KEM, signature scheme or mode, and does not combine two secrets itself. What P.R.I.S.M. writes is
 protocol glue: which key encrypts what, and what bound data goes into the associated data.
 

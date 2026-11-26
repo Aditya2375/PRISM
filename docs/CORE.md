@@ -12,7 +12,7 @@ where a claim could be doubted.
 | Device and server signing keys | ML-DSA-65 | device key file, `server_sign.key` |
 | Backup key | X25519 + ML-KEM-768 hybrid | offline, operator held |
 
-All primitives come from `cryptography>=50.0.2`. There is no hand-written combiner: the hybrid
+All primitives come from `cryptography==50.0.2` (event minimum: 50.0.2). There is no hand-written combiner: the hybrid
 KEM is the library's standard `MLKEM768_X25519` HPKE suite with HKDF-SHA256 and
 ChaCha20-Poly1305. Binding data (file id, device id, version, purpose) goes in the HPKE `info`
 input and in the AEAD associated data of the layer above, so a wrap cannot be moved to another
