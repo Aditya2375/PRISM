@@ -1,3 +1,78 @@
 # key-identity-guard
 
-DevForge Yugaantar, Track 4 ("Key Identity Guard"). Work in progress.
+DevForge Yugaantar, Track 4 ("Key Identity Guard").
+
+**Workflow protected:** a user shares an encrypted file across their devices. A device is later reported lost. The prototype cuts that device's access, re-keys the file, raises an explainable alert and leaves a signed audit trail an operator can verify.
+
+## What it does
+
+| Core objective | Where to see it |
+| --- | --- |
+| Normal operation | `python -m kig.demo` step 1, `tests/test_service.py::test_normal_operation` |
+| Security control | `report_lost` / `revoke_device` / `disable_user` commands, rules R1 to R4 in `kig/detect.py` |
+| Reliability | stale or replayed requests, epoch conflicts, restart recovery, crash between audit and state (fails closed): `tests/test_service.py` |
+| Verifiable outcome | every decision is a signed, hash-chained audit entry; each alert lists the audit sequence numbers that triggered it |
+
+## Design in one paragraph
+
+Each device holds an ML-DSA-65 signing key and a hybrid ML-KEM-768 + X25519 key. A file is encrypted on the client with a random AES-256-GCM key (the DEK). The DEK is wrapped separately for each eligible device with the hybrid KEM. The service stores ciphertext and wrapped keys only, never a DEK. Every request is a device-signed envelope with timestamp and nonce. Revoking a device deletes its wrapped keys at once and flags files for rotation, and the next authorised read re-encrypts under a fresh DEK and epoch. See `THREAT_MODEL.md` for assets, attackers, assumptions and limits.
+
+## Clean-machine setup
+
+Python 3.10 or newer.
+
+```bash
+git clone https://github.com/Aditya2375/key-identity-guard.git
+cd key-identity-guard
+python -m venv .venv && . .venv/bin/activate
+pip install -r requirements.txt
+python -m pytest -q          # all tests
+python -m kig.demo           # the lost-device scenario, end to end
+```
+
+Run the API (binds to 127.0.0.1):
+
+```bash
+KIG_DATA=./data uvicorn --factory kig.server:app --host 127.0.0.1 --port 8443
+```
+
+First start creates `data/server_sign.key`, `data/operator.token` (both mode 0600) and the audit log. Operator reads need header `X-KIG-Operator-Token`. Nothing secret is stored in the repository.
+
+## API
+
+| Endpoint | Auth | Purpose |
+| --- | --- | --- |
+| `POST /v1/command` | device signature | all state changes and key fetches |
+| `GET /v1/overview` | operator token | users, devices, files, audit head |
+| `GET /v1/audit?since=N` | operator token | audit entries (signed, chained) |
+| `GET /v1/audit/verify` | operator token | verify the whole chain |
+| `GET /v1/alerts` | operator token | alerts with rule, severity, evidence, response |
+| `GET /v1/server-key` | none | service ML-DSA public key, for offline audit verification |
+| `GET /healthz` | none | liveness |
+
+Commands for `POST /v1/command` (`cmd` field): `whoami`, `eligible`, `create_user`, `set_role`, `enroll_device`, `revoke_device`, `report_lost`, `disable_user`, `put_file`, `fetch`, `rotate`, `list_files`. Build envelopes with `kig.client.Client` (`Client.envelope`).
+
+## Detection rules
+
+| Rule | Severity | Fires when | Response |
+| --- | --- | --- | --- |
+| R1-REVOKED-DEVICE-USE | critical | a validly signed request arrives from a revoked or lost device | denied, no key material released |
+| R2-REPLAY | high | a nonce is reused | denied; that device-and-source pair locked 300 s |
+| R3-AUTH-FAILURE-BURST | high | 3 failed authentications for one device from one source in 60 s | that device-and-source pair locked 300 s |
+| R4-PRIVILEGE-ESCALATION | high, or critical if the user's first device was enrolled under 10 min earlier | a user becomes admin | recorded; demote with `set_role` |
+
+## Layout
+
+```
+kig/crypto.py    hybrid KEM, ML-DSA, AES-GCM (vetted libraries only)
+kig/audit.py     signed hash-chained log + standalone verifier
+kig/detect.py    explainable rules
+kig/service.py   identity directory, access decisions, revocation, recovery
+kig/client.py    device-side crypto and request signing
+kig/api.py       FastAPI app
+tests/           pytest suite
+```
+
+## Licence
+
+MIT.
