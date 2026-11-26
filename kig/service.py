@@ -26,7 +26,7 @@ from .audit import AuditError, AuditLog
 from .detect import Alert, Detector
 
 SKEW_S = 30
-GRACE_S = 60  # rotation cutoff: the previous key version stays readable this long for in-flight transfers
+GRACE_S = 30  # rotation cutoff: the previous key version stays readable this long for in-flight transfers
 MAX_FILE_BYTES = 5 * 1024 * 1024
 READ_ONLY_CMDS = {"fetch", "whoami", "eligible", "list_files"}
 ROLES = ("admin", "member")
@@ -96,12 +96,28 @@ class GuardService:
         self.boot = self.clock()
         self._replay_detector()
         self._reconcile()
+        self._recover_rotations()
         self._enforce_revoked()
         if self.audit.recovered_torn_bytes:
             self._log("service.recovered", "service", {"dropped_torn_bytes": self.audit.recovered_torn_bytes})
             self._persist()
 
     # ------------------------------------------------------------ key + state
+
+    def _recover_rotations(self) -> None:
+        """Close any prepare record that has no commit. State is the single source of truth."""
+        open_: dict[tuple[str, int], dict[str, Any]] = {}
+        for e in self.audit.entries:
+            d = e["data"]
+            if e["type"] == "file.rotate_prepared":
+                open_[(d["file"], d["to_epoch"])] = d
+            elif e["type"] in ("file.rotated", "file.rotate_recovered", "file.rotate_aborted"):
+                open_.pop((d["file"], d["epoch"] if "epoch" in d else d.get("to_epoch")), None)
+        for (fid, to), d in sorted(open_.items()):
+            cur = self.state["files"].get(fid, {}).get("epoch")
+            kind = "file.rotate_recovered" if cur == to else "file.rotate_aborted"
+            self._log(kind, "service", {"file": fid, "to_epoch": to, "active_epoch": cur})
+            self._persist()
 
     def _load_server_key(self) -> None:
         sec_p, pub_p = self.dir / "server_sign.key", self.dir / "server_sign.pub"
@@ -574,12 +590,12 @@ class GuardService:
         if not prev or prev["epoch"] != want:
             self._deny("access.denied", dev, {"device": dev, "user": user, "file": fid, "action": "fetch",
                                               "why": f"epoch {want} is not current or in grace"},
-                       "expired", "that key version is no longer available")
+                       "key_version_retired", "that key version is no longer available")
         age = now - prev["rotated_at"]
         if age > GRACE_S:
             self._deny("access.denied", dev, {"device": dev, "user": user, "file": fid, "action": "fetch",
                                               "why": f"epoch {want} past cutoff ({age:.0f}s > {GRACE_S}s)"},
-                       "expired", "that key version is past its rotation cutoff")
+                       "key_version_retired", "that key version is past its rotation cutoff")
         wrap = prev["wraps"].get(dev)
         if wrap is None:
             self._deny("access.denied", dev, {"device": dev, "user": user, "file": fid, "action": "fetch",
@@ -611,12 +627,19 @@ class GuardService:
         ct = self._check_blob(args.get("ciphertext"))
         wraps = self._check_wraps(args.get("wraps"), acl)
         old_acl = f["acl"]
+        self._crash("rotate_before_prepare")
+        # Journal prepare, apply and persist, then journal commit. Recovery reads the pair.
+        self._log("file.rotate_prepared", dev, {"file": fid, "from_epoch": f["epoch"], "to_epoch": f["epoch"] + 1})
+        self._crash("rotate_after_prepare")
         # Keep the old version for in-flight readers, only for devices that stay eligible.
         f["prev"] = {"epoch": f["epoch"], "ciphertext": f["ciphertext"], "rotated_at": self.clock(),
                      "wraps": {d: w for d, w in f["wraps"].items() if d in wraps}}
         f.update(acl=acl, ciphertext=ct, wraps=wraps, epoch=f["epoch"] + 1, needs_rotation=False)
+        self._persist()
+        self._crash("rotate_mid_commit")
         self._log("file.rotated", dev, {"file": fid, "epoch": f["epoch"], "by": user,
                                         "acl_changed": acl != old_acl})
+        self._crash("rotate_after_commit")
         return {"ok": True, "epoch": f["epoch"]}
 
     def cmd_list_files(self, dev, user, role, args):

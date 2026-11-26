@@ -20,7 +20,7 @@ def test_grace_then_cutoff(w):
     assert w.bob.fetch("report", auto_rotate=False, epoch=1) == b"top secret payroll"
     assert any(e["type"] == "access.granted_grace" for e in w.svc.audit.entries)
     w.clock.tick(GRACE_S + 1)
-    assert code(w.bob.fetch, "report", False, 1) == "expired"  # past cutoff
+    assert code(w.bob.fetch, "report", False, 1) == "key_version_retired"  # past cutoff
     assert w.bob.fetch("report") == b"top secret payroll"      # current version unaffected
 
 
@@ -32,7 +32,7 @@ def test_revoked_device_gets_no_grace(w):
 
 
 def test_unknown_epoch_rejected(w):
-    assert code(w.bob.fetch, "report", False, 7) == "expired"
+    assert code(w.bob.fetch, "report", False, 7) == "key_version_retired"
 
 
 # ---- crash recovery -------------------------------------------------------
@@ -121,3 +121,27 @@ def test_corruption_in_middle_of_audit_is_not_silently_repaired(w, tmp_path):
     p.write_text("\n".join(lines) + "\n")
     with pytest.raises(a.AuditError):
         restart(w, tmp_path)
+
+
+# ---- rotation crash matrix --------------------------------------------------
+
+ROT_POINTS = ["rotate_before_prepare", "rotate_after_prepare", "rotate_mid_commit", "rotate_after_commit"]
+
+
+@pytest.mark.parametrize("point", ROT_POINTS)
+def test_rotation_crash_leaves_one_consistent_version(w, tmp_path, point):
+    w.admin.call("revoke_device", device="alice-phone")
+    revoked_before = set(w.svc.revoked)
+    w.svc.crash_at = point
+    with pytest.raises(SimulatedCrash):
+        w.admin.rotate("report")
+    svc2 = restart(w, tmp_path)
+    f = svc2.state["files"]["report"]
+    assert f["epoch"] in (1, 2)
+    assert f["epoch"] == (2 if point in ("rotate_mid_commit", "rotate_after_commit") else 1)
+    assert svc2.revoked == revoked_before
+    assert svc2.audit.verify() == (True, "ok")
+    assert not any(e["type"] == "file.rotate_prepared" for e in svc2.audit.entries) or any(
+        e["type"] in ("file.rotated", "file.rotate_recovered", "file.rotate_aborted") for e in svc2.audit.entries)
+    w.clock.tick(1)
+    assert Client(w.bob_laptop, svc2.handle, w.clock).fetch("report") == b"top secret payroll"

@@ -46,6 +46,34 @@ def verify_chain(entries: list[dict[str, Any]], service_pub: bytes) -> tuple[boo
     return True, "ok"
 
 
+CHECKPOINT_EVERY = 8
+
+
+def verify_checkpoint(entries: list[dict[str, Any]], ckpt: dict[str, Any] | None, service_pub: bytes) -> tuple[bool, str, int | None]:
+    """A signed checkpoint pins (count, head hash). Catches tail truncation and rewrites before it."""
+    if ckpt is None:
+        return True, "ok", None
+    body = ckpt.get("body", {})
+    try:
+        good = c.verify(service_pub, "checkpoint", c.canonical(body), c.b64d(ckpt["sig"]))
+    except (KeyError, c.CryptoError):
+        good = False
+    if not good:
+        return False, "checkpoint signature invalid", None
+    n = body["count"]
+    if len(entries) < n:
+        return False, f"log truncated: checkpoint covers {n} entries, found {len(entries)}", len(entries)
+    if n and entries[n - 1].get("hash") != body["head"]:
+        return False, f"entry {n - 1}: does not match signed checkpoint", n - 1
+    return True, "ok", None
+
+
+def first_bad_seq(reason: str) -> int | None:
+    import re
+    m = re.search(r"entry (\d+)", reason)
+    return int(m.group(1)) if m else None
+
+
 class AuditLog:
     def __init__(self, path: Path, service_sec: bytes, service_pub: bytes):
         self.path = Path(path)
@@ -54,11 +82,30 @@ class AuditLog:
         self._lock = threading.Lock()
         self.entries: list[dict[str, Any]] = []
         self.recovered_torn_bytes = 0
+        self.ckpt_path = self.path.with_suffix(".ckpt")
         if self.path.exists():
             self.entries = self._load()
-            ok, why = verify_chain(self.entries, self.pub)
+            ok, why = self.verify()
             if not ok:
                 raise AuditError(f"audit log failed verification on startup: {why}")
+
+    def _read_ckpt(self) -> dict[str, Any] | None:
+        import json
+        try:
+            return json.loads(self.ckpt_path.read_text())
+        except (OSError, ValueError):
+            return None if not self.ckpt_path.exists() else {"body": {}, "sig": ""}
+
+    def _write_ckpt(self) -> None:
+        import json
+        body = {"count": len(self.entries), "head": self.head}
+        ck = {"body": body, "sig": c.b64e(c.sign(self._sec, "checkpoint", c.canonical(body)))}
+        tmp = self.ckpt_path.with_suffix(".ckpt.tmp")
+        with open(tmp, "w") as fh:
+            fh.write(json.dumps(ck))
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(tmp, self.ckpt_path)
 
     def _load(self) -> list[dict[str, Any]]:
         import json
@@ -110,10 +157,16 @@ class AuditLog:
                 fh.flush()
                 os.fsync(fh.fileno())
             self.entries.append(entry)
+            if len(self.entries) % CHECKPOINT_EVERY == 0:
+                self._write_ckpt()
             return entry
 
     def since(self, seq: int) -> list[dict[str, Any]]:
         return self.entries[max(0, seq):]
 
     def verify(self) -> tuple[bool, str]:
-        return verify_chain(self.entries, self.pub)
+        ok, why = verify_chain(self.entries, self.pub)
+        if not ok:
+            return ok, why
+        ok, why, _ = verify_checkpoint(self.entries, self._read_ckpt(), self.pub)
+        return ok, why

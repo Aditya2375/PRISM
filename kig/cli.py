@@ -50,10 +50,25 @@ def main(argv: list[str] | None = None) -> int:
 
     if a.op == "verify-log":
         from pathlib import Path
-        from .audit import verify_chain
-        entries = [json.loads(l) for l in (Path(a.data) / "audit.jsonl").read_text().splitlines() if l.strip()]
-        ok, why = verify_chain(entries, (Path(a.data) / "server_sign.pub").read_bytes())
-        print(f"{'OK' if ok else 'FAILED'}: {why} ({len(entries)} entries)")
+        from .audit import first_bad_seq, verify_chain, verify_checkpoint
+        d = Path(a.data)
+        pub = (d / "server_sign.pub").read_bytes()
+        try:
+            entries = [json.loads(l) for l in (d / "audit.jsonl").read_bytes().split(b"\n") if l.strip()]
+        except ValueError:
+            print("FAILED: unparseable line in log")
+            return 1
+        ok, why = verify_chain(entries, pub)
+        if ok:
+            ck = None
+            if (d / "audit.ckpt").exists():
+                try:
+                    ck = json.loads((d / "audit.ckpt").read_text())
+                except ValueError:
+                    ck = {"body": {}, "sig": ""}
+            ok, why, _ = verify_checkpoint(entries, ck, pub)
+        bad = first_bad_seq(why)
+        print(f"{'OK' if ok else 'FAILED'}: {why} ({len(entries)} entries)" + (f" first_bad_seq={bad}" if not ok and bad is not None else ""))
         return 0 if ok else 1
     if a.op in ("init", "keygen"):
         dev = Device.generate(a.device, a.user)

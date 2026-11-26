@@ -1,5 +1,6 @@
 import copy
 
+from kig.service import GRACE_S
 from kig import crypto as c
 from kig.client import Client, Device
 from kig.service import GuardService
