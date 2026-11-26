@@ -64,6 +64,7 @@ class GuardService:
         self.detector = Detector()
         self.locks: dict[str, float] = {}
         self.nonces: dict[str, float] = {}
+        self._src = "local"
         # Nonces are memory-only, so refuse anything signed before this process started.
         self.boot = self.clock()
         self._replay_detector()
@@ -185,15 +186,20 @@ class GuardService:
 
     # ------------------------------------------------------------ entry point
 
-    def handle(self, env: dict[str, Any]) -> dict[str, Any]:
-        """Process one signed envelope. Returns a JSON-able dict or raises Denied."""
+    def handle(self, env: dict[str, Any], source: str = "local") -> dict[str, Any]:
+        """Process one signed envelope. Returns a JSON-able dict or raises Denied.
+
+        ``source`` is the network origin (the API passes the client address).
+        Lockouts are keyed by device AND source, so an attacker cannot lock a
+        victim out by sending garbage that claims the victim's device id.
+        """
         with self._lock:
-            try:
-                return self._handle(env)
-            except Denied:
-                raise
+            self._src = str(source)[:64]
+            return self._handle(env)
 
     def _deny(self, etype: str, actor: str, data: dict[str, Any], code: str, reason: str) -> None:
+        if etype.startswith("auth."):
+            data = dict(data, source=self._src)
         self._log(etype, actor, data)
         raise Denied(code, reason)
 
@@ -212,8 +218,8 @@ class GuardService:
             raise Denied("bad_request", "malformed envelope", 400) from None
 
         now = self.clock()
-        if self.locks.get(dev_id, 0) > now:
-            self._log("auth.locked_out", "unknown", {"device": dev_id, "cmd": cmd})
+        if self.locks.get(f"{dev_id[:64]}@{self._src}", 0) > now:
+            self._log("auth.locked_out", "unknown", {"device": dev_id[:64], "cmd": cmd[:32], "source": self._src})
             raise Denied("locked", "identifier temporarily locked after repeated failures", 429)
 
         dev = self.state["devices"].get(dev_id)

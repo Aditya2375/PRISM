@@ -77,14 +77,14 @@ class Detector:
                     f"A signed request from {d['device']} reused a nonce already seen. "
                     "The replay was denied.",
                     [seq],
-                    response=f"locked {LOCKOUT_S}s",
+                    response=f"source {d.get('source')} locked {LOCKOUT_S}s",
                     subject=d["device"],
-                    lock_key=d["device"],
+                    lock_key=f"{d['device']}@{d.get('source')}",
                     lock_until=ts + LOCKOUT_S,
                 )
             )
         elif t in ("auth.bad_signature", "auth.unknown_device"):
-            key = d.get("device", "?")
+            key = f"{d.get('device', '?')}@{d.get('source')}"
             hist = [x for x in self.failures.get(key, []) if ts - x[0] <= BURST_WINDOW_S]
             hist.append((ts, seq))
             self.failures[key] = hist
@@ -95,11 +95,11 @@ class Detector:
                     Alert(
                         "R3-AUTH-FAILURE-BURST",
                         "high",
-                        f"{len(hist)} failed authentications claiming device '{key}' within "
-                        f"{BURST_WINDOW_S}s. The identifier is locked for {LOCKOUT_S}s.",
+                        f"{len(hist)} failed authentications claiming '{key}' within "
+                        f"{BURST_WINDOW_S}s from one source. That device-and-source pair is locked for {LOCKOUT_S}s.",
                         [s for _, s in hist],
                         response=f"locked {LOCKOUT_S}s",
-                        subject=key,
+                        subject=key.split("@")[0],
                         lock_key=key,
                         lock_until=ts + LOCKOUT_S,
                     )
