@@ -1,4 +1,4 @@
-# PRISM (key-identity-guard)
+# PRISM
 
 Post-quantum Resilient Identity & Security Management. Core design notes: `docs/CORE.md`.
 
@@ -24,8 +24,8 @@ Each device holds an ML-DSA-65 signing key and a hybrid ML-KEM-768 + X25519 key.
 Python 3.10 or newer.
 
 ```bash
-git clone https://github.com/Aditya2375/key-identity-guard.git
-cd key-identity-guard
+git clone https://github.com/Aditya2375/PRISM.git
+cd PRISM
 python -m venv .venv && . .venv/bin/activate
 pip install -r requirements.txt
 python -m pytest -q          # all tests
@@ -62,7 +62,7 @@ First start creates `data/server_sign.key`, `data/operator.token` (both mode 060
 
 Commands for `POST /v1/command` (`cmd` field): `whoami`, `eligible`, `create_user`, `set_role`, `enroll_device`, `revoke_device`, `report_lost`, `disable_user`, `put_file`, `fetch`, `rotate`, `list_files`. Build envelopes with `kig.client.Client` (`Client.envelope`).
 
-Operator CLI: `python -m kig.cli rotate-pending --url URL --key device.json` re-keys every file flagged `needs_rotation` that this device may rotate (owner or admin in the ACL). Behind a reverse proxy set `KIG_TRUSTED_PROXY=1` and `KIG_PROXY_HOPS` (default 1) so the source address is the one your proxy appended.
+Operator CLI: `python -m kig.cli rotate-pending --url URL --key device.json` re-keys every file flagged `needs_rotation` that this device may rotate (owner or admin in the ACL). Behind a reverse proxy (the service port must be reachable only through it) set `KIG_TRUSTED_PROXY=1` and `KIG_PROXY_HOPS` (default 1) so the source address is the one your proxy appended.
 
 ## Detection rules
 

@@ -104,8 +104,10 @@ flips are all rejected (`tests/test_backup.py`).
   device and are never crowded out by anonymous noise. 10,000 file cap.
 * Owner or admin compromise, server-supplied `can_rotate`, and unrecoverable files (an admin must be in
   the ACL): see THREAT_MODEL.md. `python -m kig.cli rotate-pending` re-keys every flagged file.
-* An identical retried envelope gets 409 with no cached result. Replicas refuse a snapshot older than
-  their persisted version, which matters after the primary is restored from an old backup.
+* After a valid signature the first log line per device and class is always written; extras share a
+  global cap of 300 per minute.
+* An identical retried envelope gets 409 with no cached result. Replicas accept a snapshot only if
+  (restore generation, audit length) strictly advances, so a restored primary converges.
 * Backup and restore build the payload in memory (about 2.7x the data size).
 * Every mutation rewrites `state.json`, so write cost grows with the number of files. Fine for the
   prototype scale measured above, not for millions of files.
