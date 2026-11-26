@@ -184,7 +184,7 @@ def create_web_app(client: Client, token: str, cors_origins: list[str] | None = 
     async def enroll(request: Request):
         d = await body(request)
         args = _pub(d)
-        if d.get("limited") not in (None, True, False):
+        if d.get("limited") is not None and not isinstance(d.get("limited"), bool):
             raise Denied("bad_request", "limited must be true or false", 400)
         if d.get("limited") is True:
             args["limited"] = True

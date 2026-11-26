@@ -747,3 +747,54 @@ def test_x_is_admin_does_not_walk_the_same_failed_chain_twice(tmp_path):
     assert calls.count("bob") == 1
     bc.add_root("cd" * 16)                                       # new trust input: the memo is dropped
     assert bc._neg_dir is None
+
+
+def test_l1_removing_a_limited_device_of_an_admin_by_a_sibling_raises_a_high_alert(tmp_path, capsys):
+    svc, laptop = boot(tmp_path / "d")
+    ac = Client(laptop, svc.handle)
+    phone = Device.generate("adm-phone", "adm")
+    ac.call("enroll_device", **phone.public_args(), limited=True)
+    ac.call("report_lost", device="adm-phone")
+    al = [e["data"] for e in svc.audit.entries if e["type"] == "alert.raised"]
+    assert any(a["rule"] == "R5-ADMIN-LIMITED-DEVICE-REMOVED" and a["severity"] == "high" for a in al)
+    assert "R5-ADMIN-LIMITED-DEVICE-REMOVED" in capsys.readouterr().err
+
+
+def test_l2_last_admin_guard_counts_only_full_admin_devices(tmp_path):
+    svc, laptop = boot(tmp_path / "d")
+    ac = Client(laptop, svc.handle)
+    phone = Device.generate("adm-phone", "adm")
+    ac.call("enroll_device", **phone.public_args(), limited=True)
+    with pytest.raises(Denied):
+        svc.revoke_device_offline("adm-1")                         # would leave only a limited phone
+    with pytest.raises(Denied):
+        Client(phone, svc.handle).call("revoke_device", device="adm-1")
+    assert svc.state["devices"]["adm-1"]["status"] == "active"
+
+
+def test_z1_client_refuses_an_enrolment_signed_by_a_limited_device(tmp_path):
+    clock = type("C", (), {"t": 1_800_000_000.0, "__call__": lambda self: self.t})()
+    svc, laptop = boot(tmp_path / "d", clock=clock)
+    ac = Client(laptop, svc.handle, clock)
+    tab = Device.generate("adm-tab", "adm")
+    ac.call("enroll_device", **tab.public_args(), limited=True)
+    evil = Device.generate("evil-dev", "adm")
+    forged = Client(tab, lambda env: {}, clock).envelope("enroll_device", evil.public_args())
+    dirm = ac.call("directory", devices=["adm-tab"])["devices"]
+    dirm["evil-dev"] = {"user": "adm", "sign_pub": c.b64e(evil.sign_pub), "kem_pub": c.b64e(evil.kem_pub),
+                        "status": "active", "proof": forged, "role_proof": None}
+    cl = Client(laptop, svc.handle, clock)
+    with pytest.raises(c.CryptoError):
+        cl._prove("evil-dev", dirm)
+
+
+def test_z2_web_enrol_limited_must_be_a_real_boolean(tmp_path):
+    from test_webapi import world, web, H
+    svc, clock, tr, a, r, phone, adm, rav, pdev = world(tmp_path)
+    w = web(a)
+    for i, bad in enumerate((1, 0, "yes", [])):
+        new = Device.generate(f"asha-tab-{i}", "asha")
+        resp = w.post("/devices/enroll", json={"pub": new.public_args(), "unverified": True, "limited": bad}, headers=H)
+        assert resp.status_code == 400 and f"asha-tab-{i}" not in svc.state["devices"]
+    ok = w.post("/devices/enroll", json={"pub": Device.generate("asha-tab-ok", "asha").public_args(), "unverified": True, "limited": True}, headers=H)
+    assert ok.status_code == 200 and svc.state["devices"]["asha-tab-ok"]["limited"] is True

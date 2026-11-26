@@ -341,6 +341,8 @@ class Client:
                         and body["args"].get("role") == "admin" and signer != did):
                     continue
                 suser, ssp, _ = self._prove(signer, dirm, depth + 1, busy | {user})
+                if self._limited(dirm, signer):
+                    continue
                 if self._is_admin(suser, dirm, depth + 1, busy | {user}) and \
                         c.verify(c.b64d(ssp), "cmd", c.canonical(body), c.b64d(env["sig"])):
                     self._admin_users.add(user)
@@ -348,6 +350,19 @@ class Client:
             except (KeyError, TypeError, ValueError, c.CryptoError):
                 continue
         return False
+
+    @staticmethod
+    def _limited(dirm: dict[str, Any], dev_id: str) -> bool:
+        """True when the device's own signed enrolment says it is a limited device (no admin power). The signature on that
+        record has been checked by _prove before this is asked."""
+        e = dirm.get(dev_id)
+        p = e.get("proof") if isinstance(e, dict) else None
+        args = None
+        try:
+            args = p["args"] if isinstance(p, dict) else None
+        except KeyError:
+            pass
+        return isinstance(args, dict) and args.get("limited") is True
 
     def _prove(self, dev_id: str, dirm: dict[str, Any], depth: int = 0, busy: frozenset = frozenset()) -> tuple[str, str, str]:
         """Return (user, sign_pub, kem_pub) of a device if its enrolment chain ends at a pinned root and every signer
@@ -376,6 +391,8 @@ class Client:
             if not ok:
                 raise c.CryptoError(f"the enrolment record for device {dev_id} does not match its keys")
             suser, ssp, _ = self._prove(signer, dirm, depth + 1, busy)
+            if self._limited(dirm, signer):
+                raise c.CryptoError(f"the enrolment of device {dev_id} was signed by a limited device, which has no admin power")
             if not self._is_admin(suser, dirm, depth + 1, busy):
                 raise c.CryptoError(f"the enrolment of device {dev_id} was signed by a device of {suser}, who is not "
                                     "shown to be an admin")

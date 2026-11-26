@@ -815,6 +815,7 @@ class GuardService:
             self._require_settled(dev, kind)
         # the last active device of the last active admin can never be removed, or nobody could enrol or recover
         still = [x for x, v in self.state["devices"].items() if x != target and v["status"] == "active"
+                 and not v.get("limited")
                  and self.state["users"].get(v["user"], {}).get("role") == "admin" and self.state["users"][v["user"]]["active"]]
         if not still:
             raise Denied("conflict", "this is the last active admin device; enrol another admin device first "
@@ -824,7 +825,9 @@ class GuardService:
         pending = sorted(k for k, f in self.state["files"].items() if f["needs_rotation"])
         self._log(f"device.{'lost' if kind == 'lost' else 'revoked'}", dev,
                   {"device": target, "user": d["user"], "by": user,
-                   "reason": str(args.get("reason", ""))[:200], "files_needing_rotation": pending})
+                   "reason": str(args.get("reason", ""))[:200], "files_needing_rotation": pending,
+                   "admin_limited_by_sibling": bool(d.get("limited") and d["user"] == user and target != dev
+                                                    and self.state["users"].get(d["user"], {}).get("role") == "admin")})
         return {"ok": True, "files_needing_rotation": pending}
 
     def cmd_revoke_device(self, dev, user, role, args):
@@ -1143,7 +1146,8 @@ class GuardService:
             if d["status"] != "active":
                 return []
             still = [x for x, v in self.state["devices"].items() if x != target and v["status"] == "active"
-                     and self.state["users"].get(v["user"], {}).get("role") == "admin" and self.state["users"][v["user"]]["active"]]
+                     and not v.get("limited")
+                 and self.state["users"].get(v["user"], {}).get("role") == "admin" and self.state["users"][v["user"]]["active"]]
             if not still:
                 raise Denied("conflict", "this is the last active admin device; enrol another with recover-admin first", 409)
             self._record_revoked([target])
