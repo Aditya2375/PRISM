@@ -2,9 +2,49 @@
 
 Post-quantum Resilient Identity & Security Management. Package `kig` is the code name of P.R.I.S.M. (see docs/CRYPTO.md). Core design notes: `docs/CORE.md`; cryptography and claims: `docs/CRYPTO.md`.
 
-DevForge Yugaantar, Track 4 ("Key Identity Guard").
+DevForge Yugaantar, Track 4: Post-Quantum Security ("Trust, But Verify").
 
 **Workflow protected:** a user shares an encrypted file across their devices. A device is later reported lost. The prototype cuts that device's access, re-keys the file, raises an explainable alert and leaves a signed audit trail an operator can verify.
+
+## Try it in 90 seconds
+
+```bash
+pip install -r requirements.txt
+python -m kig.demo --story     # lost phone, 3 nodes, tamper, crash and recovery, claim-to-evidence table
+python -m kig.bench            # measured cost of put, fetch, rotate, backup, restore
+python -m pytest -q            # the full suite
+```
+
+`--story` exits 1 if any of its checks fails. Every claim row it prints points at the step that shows it.
+
+## Architecture
+
+```
+ device (laptop, phone)                         service (primary + 2 replicas)
+ ----------------------                         ------------------------------
+ ML-DSA-65 signing key   --signed request-->    check signature, audience, nonce, revoked set
+ hybrid ML-KEM-768+X25519 key                   store ciphertext + per-device wrapped keys only
+ encrypts file (AES-256-GCM)  <--wrap, manifest-- state journal (signed snapshot + signed WAL)
+ checks signed manifest, pins keys              signed hash-chained audit log, revoked.log first
+                                                signed encrypted backups, doctor, bench
+```
+
+* Revocation, replicas and what is simulated: `docs/REVOCATION.md`.
+* Storage, journal, backup and the signed manifest: `docs/CORE.md`.
+* Cryptography, known-answer tests, naming: `docs/CRYPTO.md`.
+* Assets, attackers and limits: `THREAT_MODEL.md`. Reporting a problem: `SECURITY.md`.
+
+## What is different here
+
+* Nothing custom in the cryptography. HPKE, AES-256-GCM, ML-DSA-65 and scrypt come from one pinned library, and NIST
+  known-answer vectors run in the tests.
+* The server cannot silently change who may read a file: each file version carries a device-signed manifest of its
+  ACL, owner and key commitment, and clients pin the writers.
+* The audit log is the witness for the state journal, so deleting or truncating state is detected.
+* Backups are signed and sealed, stream their blobs, and are restored with explicit, audited waivers.
+* Revocation survives restarts, partitions, replays and rolled-back nodes, with the one bounded exposure window
+  documented as a number.
+* Every limit is written down next to the claim it limits.
 
 ## What it does
 
@@ -17,11 +57,11 @@ DevForge Yugaantar, Track 4 ("Key Identity Guard").
 
 ## Design in one paragraph
 
-Each device holds an ML-DSA-65 signing key and a hybrid ML-KEM-768 + X25519 key. A file is encrypted on the client with a random AES-256-GCM key (the DEK). The DEK is wrapped separately for each eligible device with the hybrid KEM. The service stores ciphertext and wrapped keys only, never a DEK. Every request is a device-signed envelope with timestamp and nonce. Revoking a device deletes its wrapped keys at once and flags files for rotation, and the next authorised read re-encrypts under a fresh DEK and epoch. See `THREAT_MODEL.md` for assets, attackers, assumptions and limits.
+Each device holds an ML-DSA-65 signing key and a hybrid ML-KEM-768 + X25519 key. A file is encrypted on the client with a random AES-256-GCM key (the DEK). The DEK is wrapped separately for each eligible device with the hybrid KEM. The service stores ciphertext and wrapped keys only, never a DEK. Every request is a device-signed envelope with timestamp and nonce. Revoking a device takes effect on the primary at once (replicas follow in tens of milliseconds, with a 5 s bound for a cut-off replica, see `docs/REVOCATION.md`), removes its wrapped keys and flags files for rotation, and the next authorised read re-encrypts under a fresh DEK and epoch. See `THREAT_MODEL.md` for assets, attackers, assumptions and limits.
 
 ## Clean-machine setup
 
-Python 3.10 or newer.
+Python 3.10 or newer (tested on 3.10, 3.12 and 3.13).
 
 ```bash
 git clone https://github.com/Aditya2375/PRISM.git
@@ -80,6 +120,11 @@ kig/crypto.py    hybrid HPKE KEM, ML-DSA, AES-256-GCM (cryptography package only
 kig/vault.py     passphrase-sealed key files
 kig/backup.py    signed encrypted backups, verify before restore
 kig/audit.py     signed hash-chained log + standalone verifier
+kig/store.py     signed snapshot + signed journal (O(1) writes)
+kig/cluster.py   primary + two replicas, signed revocation certificates, lease
+kig/doctor.py    read-only directory checker
+kig/bench.py     measured cost at several sizes
+kig/demo.py      the lost-device story
 kig/detect.py    explainable rules
 kig/service.py   identity directory, access decisions, revocation, recovery
 kig/client.py    device-side crypto and request signing
