@@ -164,10 +164,10 @@ attacker does not control, and it is optional: without `expect_fingerprint` the 
 
 ## `kig doctor`
 
-`python -m kig.cli doctor --data DIR` opens the directory as the service would (crash recovery runs; a journal
-behind the audit log is reported as `FAIL open`), then checks the audit chain, every referenced blob against its
-hash, orphan blobs and file permissions. Exit code 1 on any FAIL. Run it on a stopped service or a copy: it opens the
-directory itself, and two processes must not share one data directory.
+`python -m kig.cli doctor --data DIR` is read-only and never creates files, so it can run next to a live server.
+It checks a temporary copy (blobs linked), opened exactly as start-up does: crash recovery, the journal-behind-audit
+check and the audit chain run there. On the original it then hashes every referenced blob, lists orphan blobs
+(it does not delete them) and checks permissions. A path without PRISM data is a FAIL. Exit code 1 on any FAIL.
 
 ## Demo
 

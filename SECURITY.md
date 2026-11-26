@@ -4,8 +4,8 @@ P.R.I.S.M. is a hackathon project (DevForge Yugaantar, Track 4). It has not had 
 
 ## Report a problem
 
-Open a private security advisory on the GitHub repository, or contact the repository owner. Please include
-steps to reproduce. There is no bug bounty.
+Use GitHub Security Advisories: https://github.com/Aditya2375/PRISM/security/advisories/new (private to the
+maintainers). Please include steps to reproduce. There is no bug bounty.
 
 ## What is and is not claimed
 

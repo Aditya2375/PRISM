@@ -60,9 +60,7 @@ def main(story: bool = False) -> int:
 
 def _story(tmp: str, svc: GuardService, admin: Client, ravi: Client) -> bool:
     """Steps 6 to 8: tampering, a crash in the middle of a rotation, and the claim-to-evidence table."""
-    import copy
     from pathlib import Path
-    from .audit import verify_chain
     from .doctor import check
     from .service import SimulatedCrash
     good = True
@@ -80,13 +78,14 @@ def _story(tmp: str, svc: GuardService, admin: Client, ravi: Client) -> bool:
         print(f"   read refused: {e.code}")
     print("   doctor:", "; ".join(f"{r[0]} {r[1]}" for r in check(tmp) if r[0] != "OK") or "nothing found")
     bp.write_bytes(orig)
-    svc = GuardService(tmp)          # doctor opened the directory itself, so continue on a fresh instance
-    admin, ravi = Client(admin.dev, svc.handle), Client(ravi.dev, svc.handle)
-    forged = copy.deepcopy(svc.audit.entries)
-    forged[3]["actor"] = "someone-else"
-    ok2, why = verify_chain(forged, svc.pub)
-    print(f"   edited audit copy verifies: {ok2} ({why})")
-    good = good and not ok2
+    ap = Path(tmp) / "audit.jsonl"
+    lines = ap.read_text().splitlines()
+    saved = ap.read_text()
+    e = json.loads(lines[3]); e["actor"] = "someone-else"; lines[3] = json.dumps(e, sort_keys=True)
+    ap.write_text("\n".join(lines) + "\n")
+    print("   doctor after the audit edit:", "; ".join(f"{r[0]} {r[1]}" for r in check(tmp) if r[0] != "OK") or "nothing found")
+    good = good and any(r[0] == "FAIL" and r[1] in ("audit", "open") for r in check(tmp))
+    ap.write_text(saved)
 
     step(7, "Crash in the middle of a key rotation, then restart")
     svc.crash_at = "rotate_mid_commit"
@@ -108,8 +107,8 @@ def _story(tmp: str, svc: GuardService, admin: Client, ravi: Client) -> bool:
     rows = [
         ("Lost device is cut off at once", "step 3: validly signed request denied, no key released"),
         ("Revocation is visible and explained", "step 5: alert R1 with the two audit entries as evidence"),
-        ("Stored data cannot be altered silently", "step 6: blob hash check refuses the read; doctor FAILs"),
-        ("The audit log cannot be edited silently", "step 6: edited copy fails chain verification"),
+        ("A changed stored ciphertext is detected", "step 6: the one altered ciphertext is refused on read and doctor FAILs"),
+        ("An edited audit line is detected", "step 6: one edited line on disk makes doctor FAIL"),
         ("A crash does not lose or half-apply a rotation", "step 7: restart recovers, file readable, chain valid"),
     ]
     for claim, ev in rows:

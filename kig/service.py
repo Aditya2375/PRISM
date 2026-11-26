@@ -81,6 +81,17 @@ def _atomic_write(path: Path, data: bytes, mode: int = 0o600, hook: Callable[[],
         os.close(dfd)
 
 
+def _fp_equal(a: Any, b: str) -> bool:
+    """Compare fingerprints typed by a person: ignore case, dashes and spaces."""
+    norm = lambda x: "".join(ch for ch in str(x).lower() if ch not in "- \t")  # noqa: E731
+    return hmac_compare(norm(a), norm(b))
+
+
+def hmac_compare(a: str, b: str) -> bool:
+    import hmac
+    return hmac.compare_digest(a.encode(), b.encode())
+
+
 class GuardService:
     def __init__(self, data_dir: str | Path, clock: Callable[[], float] = time.time,
                  name: str = "primary", read_only: bool = False):
@@ -588,7 +599,7 @@ class GuardService:
         from .client import device_fingerprint
         fp = device_fingerprint(new_dev, target, sp, kp)
         expect = args.get("expect_fingerprint")
-        if expect is not None and expect != fp:
+        if expect is not None and not _fp_equal(expect, fp):
             raise Denied("fingerprint_mismatch", "key fingerprint differs from the one the admin verified", 409)
         if target not in self.state["users"] or not self.state["users"][target]["active"]:
             raise Denied("bad_request", "unknown or disabled user", 400)
