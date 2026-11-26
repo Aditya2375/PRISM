@@ -126,9 +126,9 @@ flips are all rejected (`tests/test_backup.py`).
   5.6 to 7.4 ms at 300, 600, 900, 1200 and 1500 files (it was 24.5 to 99.9 ms with whole-state rewrites).
   Every 1000 journal lines a full snapshot is written, a pause that grows with total state size. Start-up
   reads all records. The audit log is the witness for the journal: if, after replay, the audit log is ahead of
-  state by more than the one command that could have been in flight (more than two state-changing entries),
+  state by more than the last single command (more than one state-changing entry),
   start-up refuses (`StateCorrupt`), so deleting or truncating `state.wal`, or restoring an older copy, is caught
-  and no blobs are garbage-collected. Not caught: removing only the last command or two, which looks like a
+  and no blobs are garbage-collected. Not caught: removing only the last single command, which looks like a
   crash before acknowledgement. Revocations survive that either way, because `revoked.log` is separate.
   An unterminated last journal line is dropped even if it parses, because it was never acknowledged.
   `peek_meta` (used for backup counters of a surviving directory) reads unverified values and can only cause

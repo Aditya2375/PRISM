@@ -30,7 +30,7 @@ from typing import Any
 from . import crypto as c
 from . import vault
 from .audit import verify_chain
-from .service import GuardService, _atomic_write
+from .service import MAX_FILE_BYTES, GuardService, _atomic_write
 from .store import encode_snapshot, peek_meta
 
 
@@ -206,6 +206,8 @@ def _read_small(tf: tarfile.TarFile, ti: tarfile.TarInfo, limit: int = 1 << 31) 
 
 
 def _hash_stream(tf: tarfile.TarFile, ti: tarfile.TarInfo, sink=None) -> str:
+    if ti.size > MAX_FILE_BYTES + 64:
+        raise BackupError("blob member is larger than the service accepts")
     h = hashlib.sha256()
     fh = tf.extractfile(ti)
     if fh is None:
@@ -230,7 +232,7 @@ def verify_and_open(path: str | Path, backup_pub: bytes, backup_sec: bytes,
     try:
         mem = _members(tf)
         try:
-            doc = json.loads(_read_small(tf, mem["manifest.json"], 1 << 28))
+            doc = json.loads(_read_small(tf, mem["manifest.json"], 1 << 26))
             sig = c.b64d(doc.pop("sig"))
             manifest = doc["manifest"]
             if doc.get("v") != 2:

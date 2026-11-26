@@ -234,18 +234,18 @@ class GuardService:
         """The audit log is the witness for the state journal.
 
         State is saved before a command is acknowledged, so after a crash the audit log can be ahead of
-        state by at most the one command that was in flight (at most two state-changing entries, a
-        rotation's prepare and commit). More than that means state.wal or state.json lost acknowledged
+        state by at most the one command that was in flight: nothing or one state-changing entry
+        (a rotation persists its prepare step before it logs the commit, so it never leaves two). More than that means state.wal or state.json lost acknowledged
         commits (deleted, truncated or replaced by an older copy) and starting would silently roll back
         ACLs and devices, so refuse. Revocations are not at risk either way: revoked.log is separate.
         """
         if self._fresh:
             return
-        tail = self.audit.entries[int(self.state.get("applied", 0)):]
-        n = sum(1 for e in tail if e["type"] in STATE_CHANGING_TYPES)
-        if n > 2:
-            raise StateCorrupt(f"state is behind the audit log by {n} state-changing entries; the journal or snapshot "
-                               "lost acknowledged commits. Restore from a verified backup")
+        tail = [e for e in self.audit.entries[int(self.state.get("applied", 0)):] if e["type"] in STATE_CHANGING_TYPES]
+        ok = len(tail) <= 1
+        if not ok:
+            raise StateCorrupt(f"state is behind the audit log by {len(tail)} state-changing entries; the journal or "
+                               "snapshot lost acknowledged commits. Restore from a verified backup")
 
     def _persist(self) -> None:
         if self.read_only:
