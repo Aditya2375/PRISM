@@ -72,9 +72,14 @@ def create_app(data_dir: str | Path, service: GuardService | None = None,
         if not isinstance(env, dict):
             raise Denied("bad_request", "envelope must be an object", 400)
         src = request.client.host if request.client else "unknown"
-        if trust_proxy:   # only behind a reverse proxy you control: first hop of X-Forwarded-For
-            fwd = request.headers.get("x-forwarded-for", "").split(",")[0].strip()
-            src = fwd[:64] or src
+        if trust_proxy:
+            # Only behind reverse proxies you control. Each proxy APPENDS the address it saw, so the
+            # client-supplied (spoofable) entries are on the left. Take the entry added by the
+            # outermost trusted proxy: hop N counted from the right (KIG_PROXY_HOPS, default 1).
+            hops = [h.strip() for h in request.headers.get("x-forwarded-for", "").split(",") if h.strip()]
+            n = max(1, int(os.environ.get("KIG_PROXY_HOPS", "1") or 1))
+            if len(hops) >= n:
+                src = hops[-n][:64]
         return svc.handle(env, source=src)
 
     @app.get("/v1/overview", dependencies=[Depends(operator)])

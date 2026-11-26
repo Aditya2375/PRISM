@@ -32,7 +32,7 @@ MAX_FILE_BYTES = 5 * 1024 * 1024
 READ_ONLY_CMDS = {"fetch", "whoami", "eligible", "list_files"}
 MAX_FILES = 10_000                 # per service, bounds state size and write cost
 DEVICE_RATE_PER_MIN = 240          # authenticated requests per device per minute
-SOURCE_RATE_PER_MIN = 1200         # all requests per source address per minute
+SOURCE_FAIL_PER_MIN = 1200         # failed (unauthenticated) requests per source address per minute
 UNAUTH_LOG_PER_SOURCE_MIN = 3      # signed audit lines for unauthenticated failures, per source per minute
 UNAUTH_LOG_TOTAL_MIN = 30          # ... and in total per minute; the rest are counted and summarised
 MUTATING_TYPES = {"user.created", "role.changed", "device.enrolled", "file.created", "service.bootstrapped"}
@@ -142,6 +142,9 @@ class GuardService:
             raw = sec_p.read_bytes()
             self._sec = vault.open_(raw, pw, "prism/server-key") if vault.is_sealed(raw) else raw
             self.pub = pub_p.read_bytes()
+        elif sec_p.exists() or pub_p.exists():
+            raise StateCorrupt("exactly one of server_sign.key / server_sign.pub exists; refusing to generate a new "
+                               "signing key over it. Restore the missing file or restore from a verified backup")
         else:
             self.pub, self._sec = c.sig_keygen()
             _atomic_write(sec_p, vault.seal(self._sec, pw, "prism/server-key") if pw else self._sec)
@@ -328,6 +331,7 @@ class GuardService:
                 "kem_pub": c.b64e(kem_pub),
                 "enrolled_at": self.clock(),
             }
+            self._persist()   # state first: a crash after this leaves a usable directory, never a half-empty one
             self._log("service.bootstrapped", "operator", {"user": user, "device": device})
             self._log("device.enrolled", "operator", {"user": user, "device": device})
             self._persist()
@@ -357,9 +361,10 @@ class GuardService:
         if minute == self._ua_minute:
             return
         if self._ua_suppressed and self._ua_minute >= 0:
-            self.audit.append(now, "auth.failures_suppressed", "service",
-                              {"minute": self._ua_minute, "count": self._ua_suppressed,
-                               "note": "failed, limited or retried requests beyond the per-minute logging budget"})
+            self._log("auth.failures_suppressed", "service",
+                      {"minute": self._ua_minute, "count": self._ua_suppressed,
+                       "note": "failed, limited or retried requests beyond the per-minute logging budget"})
+            self._persist()
         self._ua_minute, self._ua_src, self._ua_total, self._ua_suppressed = minute, {}, 0, 0
         self._rate = {k: v for k, v in self._rate.items() if v[0] == minute}
 
@@ -375,24 +380,32 @@ class GuardService:
         return n > limit
 
     def _throttled(self, cls: str, key: str, etype: str, actor: str, data: dict[str, Any],
-                   code: str, reason: str) -> None:
-        """Log at most a few signed lines per key per minute and a bounded total; count the rest."""
+                   code: str, reason: str, pre_auth: bool = False) -> None:
+        """Log a bounded number of signed lines and count the rest.
+
+        Requests that failed before any signature checked out (``pre_auth``) share a small total
+        budget and count against the source's failure budget. Events after a valid signature
+        (revoked device, replay, stale, wrong audience) are never throttled by anonymous noise:
+        each gets its own few lines per device per minute.
+        """
         k = f"{cls}|{key}"
         n = self._ua_src.get(k, 0)
-        if n < UNAUTH_LOG_PER_SOURCE_MIN and self._ua_total < UNAUTH_LOG_TOTAL_MIN:
+        over_src = pre_auth and self._rate_hit(f"srcfail:{self._src}", SOURCE_FAIL_PER_MIN, self.clock())
+        if n < UNAUTH_LOG_PER_SOURCE_MIN and (not pre_auth or self._ua_total < UNAUTH_LOG_TOTAL_MIN):
             self._ua_src[k] = n + 1
-            self._ua_total += 1
+            if pre_auth:
+                self._ua_total += 1
             self._log(etype, actor, dict(data, source=self._src))
+            self._persist()     # keep state.applied current so tail truncation is caught
         else:
             self._ua_suppressed += 1
+        if over_src:
+            raise Denied("rate_limited", "too many failed requests from this source", 429)
         raise Denied(code, reason)
 
     def _handle(self, env: dict[str, Any]) -> dict[str, Any]:
         now = self.clock()
         self._roll(now)
-        if self._rate_hit(f"src:{self._src}", SOURCE_RATE_PER_MIN, now):
-            self._ua_suppressed += 1
-            raise Denied("rate_limited", "too many requests from this source", 429)
         try:
             cmd, dev_id = env["cmd"], env["device"]
             ts, nonce, args = env["ts"], env["nonce"], env["args"]
@@ -413,15 +426,17 @@ class GuardService:
             canon = c.canonical(body)
         except Exception:  # noqa: BLE001  any malformed envelope is a clean 400, never a 500
             self._ua_suppressed += 1
+            if self._rate_hit(f"srcfail:{self._src}", SOURCE_FAIL_PER_MIN, now):
+                raise Denied("rate_limited", "too many failed requests from this source", 429) from None
             raise Denied("bad_request", "malformed envelope", 400) from None
 
         dev = self.state["devices"].get(dev_id)
         if dev is None:
             self._throttled("anon", self._src, "auth.unknown_device", "unknown",
-                            {"device": dev_id[:64], "cmd": cmd[:32]}, "unauthorized", "unknown device")
+                            {"device": dev_id[:64], "cmd": cmd[:32]}, "unauthorized", "unknown device", pre_auth=True)
         if not c.verify(c.b64d(dev["sign_pub"]), "cmd", canon, sig):
             self._throttled("anon", self._src, "auth.bad_signature", dev_id,
-                            {"device": dev_id, "cmd": cmd[:32]}, "unauthorized", "bad signature")
+                            {"device": dev_id, "cmd": cmd[:32]}, "unauthorized", "bad signature", pre_auth=True)
         # from here on the signature is valid for a known device
         if self._rate_hit(f"dev:{dev_id}", DEVICE_RATE_PER_MIN, now):
             self._ua_suppressed += 1
