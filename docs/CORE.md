@@ -231,3 +231,12 @@ hash, without the backup key (it does not open the sealed metadata). `state` che
 check that the journal after the snapshot is complete (the service does that at start-up). Tail removal can only be
 excluded with a head or anchor recorded outside the directory. The format rules are written out a second time in
 this file from the docs, which is the point: a bug in the service's own checker cannot hide a bad log.
+
+## Splitting the backup private key (k of n)
+
+`kig/threshold.py` splits any secret, such as the backup private key, into n shares of which any k recover it.
+It contains no secret-sharing maths. A random 16-byte wrapping key seals the secret with AES-GCM (`cryptography`),
+and only the wrapping key is split, with PyCryptodome's Shamir (`Crypto.Protocol.SecretSharing`, pinned in
+`requirements.txt`). Shares from different splits, duplicates, corrupt shares and too few shares are refused.
+Limits: the sealed secret is repeated in every share; there is no verifiable sharing, so a corrupt share shows up
+only as a failed combine; and PyCryptodome's Shamir is a library we use, not one we audited.
