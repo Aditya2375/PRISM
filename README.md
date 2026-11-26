@@ -99,6 +99,7 @@ First start creates `data/server_sign.key`, `data/operator.token` (both mode 060
 | `GET /v1/overview` | operator token | users, devices, files, audit head |
 | `GET /v1/audit?since=N` | operator token | audit entries (signed, chained) |
 | `GET /v1/audit/verify` | operator token | verify the whole chain |
+| `GET /v1/metrics[?format=prometheus]` | operator token | counts only: users, devices by status, files, files needing rotation, audit events by type |
 | `GET /v1/alerts` | operator token | alerts with rule, severity, evidence, response |
 | `GET /v1/server-key` | none | service ML-DSA public key, for offline audit verification |
 | `GET /healthz` | none | liveness |

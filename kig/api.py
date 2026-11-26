@@ -91,6 +91,18 @@ def create_app(data_dir: str | Path, service: GuardService | None = None,
     def overview() -> dict[str, Any]:
         return svc.overview()
 
+    @app.get("/v1/metrics", dependencies=[Depends(operator)])
+    def metrics(format: str = "json"):
+        m = svc.metrics()
+        if format != "prometheus":
+            return m
+        from fastapi.responses import PlainTextResponse
+        out = [f"prism_users {m['users']}", f"prism_files {m['files']}",
+               f"prism_files_needing_rotation {m['files_needing_rotation']}", f"prism_audit_entries {m['audit_entries']}"]
+        out += [f'prism_devices{{status="{k}"}} {v}' for k, v in sorted(m["devices_by_status"].items())]
+        out += [f'prism_audit_events_total{{type="{k}"}} {v}' for k, v in sorted(m["audit_events"].items())]
+        return PlainTextResponse("\n".join(out) + "\n")
+
     @app.get("/v1/audit", dependencies=[Depends(operator)])
     def audit(since: int = 0, limit: int = 500) -> dict[str, Any]:
         rows = svc.audit.since(since)[: max(1, min(limit, 1000))]

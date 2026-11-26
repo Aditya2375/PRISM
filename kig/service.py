@@ -937,6 +937,21 @@ class GuardService:
             "audit_len": len(self.audit.entries),
         }
 
+    def metrics(self) -> dict[str, Any]:
+        """Counts only: no names, keys or file ids, so the endpoint cannot leak who has what."""
+        s = self.state
+        by_dev: dict[str, int] = {}
+        for dv in s["devices"].values():
+            by_dev[dv["status"]] = by_dev.get(dv["status"], 0) + 1
+        events: dict[str, int] = {}
+        for e in self.audit.entries:
+            events[e["type"]] = events.get(e["type"], 0) + 1
+        lease_age = None if self.last_sync is None else round(self.mono() - self.last_sync, 3)
+        return {"users": len(s["users"]), "devices_by_status": by_dev, "files": len(s["files"]),
+                "files_needing_rotation": sum(1 for f in s["files"].values() if f["needs_rotation"]),
+                "audit_entries": len(self.audit.entries), "audit_events": events,
+                "read_only": self.read_only, "lease_age_s": lease_age}
+
     # ------------------------------------------------------- replication (cluster)
 
     def _cert(self, body: dict[str, Any]) -> dict[str, Any]:

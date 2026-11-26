@@ -35,6 +35,12 @@ def test_command_roundtrip_and_operator_reads(tmp_path):
     h = {"X-KIG-Operator-Token": token}
     assert tc.get("/v1/audit/verify", headers=h).json()["ok"] is True
     assert tc.get("/v1/overview", headers=h).json()["files"]["f1"]["epoch"] == 1
+    assert tc.get("/v1/metrics").status_code == 401
+    m = tc.get("/v1/metrics", headers=h).json()
+    assert m["files"] == 1 and m["devices_by_status"]["active"] >= 1 and m["audit_events"]
+    prom = tc.get("/v1/metrics?format=prometheus", headers=h).text
+    assert "prism_files 1" in prom and 'prism_devices{status="active"}' in prom
+    assert "f1" not in prom and "asha" not in prom
     assert tc.get("/v1/server-key").json()["alg"] == "ML-DSA-65"
     assert tc.get("/healthz").json()["ok"]
 
