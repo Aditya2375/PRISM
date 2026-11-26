@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 import json
+import os
 import sys
 import urllib.error
 import urllib.request
@@ -17,6 +18,12 @@ from . import crypto as c
 from . import vault
 from .client import Client, Device
 from .service import Denied, GuardService
+
+
+def _roots(a) -> list[str] | None:
+    r = list(getattr(a, "root_fingerprint", None) or [])
+    r += [x.strip() for x in os.environ.get("KIG_ROOT_FINGERPRINTS", "").split(",") if x.strip()]
+    return r or None
 
 
 def _post(url: str, timeout: float = 15):
@@ -72,6 +79,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--data", required=True)
     p = sub.add_parser("enroll", help="enrol a new device from its public-key JSON, after comparing its fingerprint")
     p.add_argument("--url", required=True)
+    p.add_argument("--root-fingerprint", action="append", default=[], help="fingerprint of a root device every enrolment must trace back to (repeatable; or KIG_ROOT_FINGERPRINTS, comma separated)")
     p.add_argument("--key", required=True, help="the admin's own key file")
     p.add_argument("--pub", required=True, help="path to the JSON printed by `keygen` on the new device")
     g = p.add_mutually_exclusive_group(required=True)
@@ -79,20 +87,24 @@ def main(argv: list[str] | None = None) -> int:
     g.add_argument("--unverified", action="store_true", help="enrol without comparing a fingerprint (recorded as unverified)")
     p = sub.add_parser("put", help="encrypt a local file and store it")
     p.add_argument("--url", required=True)
+    p.add_argument("--root-fingerprint", action="append", default=[], help="fingerprint of a root device every enrolment must trace back to (repeatable; or KIG_ROOT_FINGERPRINTS, comma separated)")
     p.add_argument("--key", required=True)
     p.add_argument("--file-id", required=True)
     p.add_argument("--path", required=True)
     p.add_argument("--acl", default="", help="comma-separated users besides yourself")
     p = sub.add_parser("get", help="fetch and decrypt a file; checks the signed manifest and pins")
     p.add_argument("--url", required=True)
+    p.add_argument("--root-fingerprint", action="append", default=[], help="fingerprint of a root device every enrolment must trace back to (repeatable; or KIG_ROOT_FINGERPRINTS, comma separated)")
     p.add_argument("--key", required=True)
     p.add_argument("--file-id", required=True)
     p.add_argument("--out", required=True)
     p = sub.add_parser("rotate-pending", help="re-key every file flagged needs_rotation that this device may rotate")
     p.add_argument("--url", required=True)
+    p.add_argument("--root-fingerprint", action="append", default=[], help="fingerprint of a root device every enrolment must trace back to (repeatable; or KIG_ROOT_FINGERPRINTS, comma separated)")
     p.add_argument("--key", required=True)
     p = sub.add_parser("call")
     p.add_argument("--url", required=True)
+    p.add_argument("--root-fingerprint", action="append", default=[], help="fingerprint of a root device every enrolment must trace back to (repeatable; or KIG_ROOT_FINGERPRINTS, comma separated)")
     p.add_argument("--key", required=True)
     p.add_argument("cmd")
     p.add_argument("args", nargs="?", default="{}")
@@ -138,6 +150,8 @@ def main(argv: list[str] | None = None) -> int:
             return 2
         dev.save(a.out)
         print(f"enrolled new device {a.device} for admin {a.user}; key file {a.out}; fingerprint {fp}")
+        roots = GuardService(a.data).root_fingerprints()
+        print("clients must pin these roots (--root-fingerprint): " + ", ".join(roots + [fp]))
         print("every file this user can read is flagged for re-keying; record this action: it is in the audit log as an operator action", file=sys.stderr)
         return 0
     if a.op == "doctor":
@@ -168,12 +182,13 @@ def main(argv: list[str] | None = None) -> int:
         if a.op == "init":
             GuardService(a.data).bootstrap(a.user, a.device, dev.sign_pub, dev.kem_pub)
             print(f"bootstrapped admin {a.user} with device {a.device}; key file {a.out}")
+            print(f"root fingerprint (give it to every client as --root-fingerprint): {dev.fingerprint()}")
         else:
             print(json.dumps(dev.public_args()))
             print(f"fingerprint (read this to the admin): {dev.fingerprint()}", file=sys.stderr)
         return 0
     # the rollback record and the pinned writer keys live next to the key file, so separate runs share them
-    cl = Client(Device.load(a.key), _post(a.url), state_path=str(a.key) + ".state")
+    cl = Client(Device.load(a.key), _post(a.url), state_path=str(a.key) + ".state", roots=_roots(a))
     if a.op == "put":
         try:
             r = cl.put_file(a.file_id, Path(a.path).read_bytes(), acl=[u for u in a.acl.split(",") if u])

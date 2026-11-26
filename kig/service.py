@@ -1012,6 +1012,13 @@ class GuardService:
                 self._blob_path(h).unlink(missing_ok=True)
         return {"ok": True}
 
+    def root_fingerprints(self) -> list[str]:
+        """Fingerprints of the devices that nobody enrolled (the bootstrap device and any operator-recovered one)."""
+        from .client import device_fingerprint
+        with self._lock:
+            return [device_fingerprint(i, v["user"], c.b64d(v["sign_pub"]), c.b64d(v["kem_pub"]))
+                    for i, v in self.state["devices"].items() if v.get("enrolled_proof") is None]
+
     def recover_admin(self, user: str, device: str, sign_pub: bytes, kem_pub: bytes) -> str:
         """Offline operator recovery: enrol a new device for an existing active admin user. Needs the data directory,
         so it is a local operator action, and it is logged as one. Returns the device fingerprint."""

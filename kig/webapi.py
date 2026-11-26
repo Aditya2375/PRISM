@@ -192,18 +192,19 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--key", required=True, help="this device's key file")
     ap.add_argument("--url", required=True, help="the PRISM service")
     ap.add_argument("--port", type=int, default=8788)
+    ap.add_argument("--root-fingerprint", action="append", default=[], help="fingerprint of a root device (repeatable; or KIG_ROOT_FINGERPRINTS)")
     a = ap.parse_args(argv)
     if not 1 <= a.port <= 65535:
         print("refused: bad port", file=sys.stderr)
         return 2
-    from .cli import _post as _cli_post
+    from .cli import _post as _cli_post, _roots as _cli_roots
     try:
         dev = Device.load(a.key)
     except (OSError, vault.VaultError, c.CryptoError) as e:
         print(f"refused: cannot load the key file: {e}", file=sys.stderr)
         return 2
     token = secrets.token_urlsafe(32)
-    app = create_web_app(Client(dev, _cli_post(a.url, timeout=10), state_path=str(a.key) + ".state"), token, port=a.port)
+    app = create_web_app(Client(dev, _cli_post(a.url, timeout=10), state_path=str(a.key) + ".state", roots=_cli_roots(a)), token, port=a.port)
     print(f"PRISM local backend for {dev.user}/{dev.device_id} on http://127.0.0.1:{a.port}", file=sys.stderr)
     print(f"session token (send as {HEADER}): {token}", file=sys.stderr)
     import uvicorn
