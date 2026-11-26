@@ -125,8 +125,14 @@ flips are all rejected (`tests/test_backup.py`).
 * A write costs time proportional to the size of the changed records, not the number of files: `put_file` took
   5.6 to 7.4 ms at 300, 600, 900, 1200 and 1500 files (it was 24.5 to 99.9 ms with whole-state rewrites).
   Every 1000 journal lines a full snapshot is written, a pause that grows with total state size. Start-up
-  reads all records. Rolling back the journal tail (deleting its last lines) is the same class of attack as
-  restoring an old `state.json`: revocations survive it because `revoked.log` is separate, and the audit log
-  being ahead of state is detected.
+  reads all records. The audit log is the witness for the journal: if, after replay, the audit log is ahead of
+  state by more than the one command that could have been in flight (more than two state-changing entries),
+  start-up refuses (`StateCorrupt`), so deleting or truncating `state.wal`, or restoring an older copy, is caught
+  and no blobs are garbage-collected. Not caught: removing only the last command or two, which looks like a
+  crash before acknowledgement. Revocations survive that either way, because `revoked.log` is separate.
+  An unterminated last journal line is dropped even if it parses, because it was never acknowledged.
+  `peek_meta` (used for backup counters of a surviving directory) reads unverified values and can only cause
+  a refusal or a needless override, never a wrong restore. Replica nodes write their whole epoch map with every
+  journal line, so replica writes cost grows with the number of files.
 * Single host. The cluster nodes in `kig/cluster.py` are in-process simulations with their own data
   directories, not separate machines.

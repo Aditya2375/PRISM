@@ -21,9 +21,10 @@ Evidence about the library (`cryptography==50.0.2`, pinned in `requirements.txt`
 runs NIST ACVP vectors (usnistgov/ACVP-Server, commit pinned in `tests/vectors/acvp.json`):
 * ML-DSA-65 key generation: 25 cases, public key from seed.
 * ML-KEM-768 key generation: 25 cases, encapsulation key from seed.
-* ML-DSA-65 signature verification: exactly 1 case (an invalid signature, which must be rejected). The
-  library's API takes no context string, so only vectors with an empty context can be expressed, and ACVP
-  has only that one for ML-DSA-65.
+* ML-DSA-65 signature verification: the pinned vector file contains exactly 1 case we can express (an
+  invalid signature, which must be rejected). The library's API takes no context string, so only vectors with
+  an empty context can be used, and in the file we pinned (`ML-DSA-sigVer-FIPS204` internalProjection, external
+  interface, pure) one ML-DSA-65 case has an empty context.
 
 Not independently tested: ML-KEM encapsulation and decapsulation (the library exposes no way to inject the
 randomness or load an expanded key), the hybrid HPKE KEM, and ML-DSA signing. For those we test round trips,
