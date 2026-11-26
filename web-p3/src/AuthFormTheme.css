@@ -1,0 +1,145 @@
+.login-screen {
+  min-height: 100vh;
+  padding: 28px 16px;
+  background: #080808;
+  color: #CDCBCA;
+  transform: none;
+}
+
+.login-container {
+  width: min(100%, 500px);
+}
+
+.login-card {
+  width: 100%;
+  padding: 27px 30px;
+  border: 1px solid #292929;
+  border-radius: 12px;
+  background: #0b0b0b;
+  box-shadow: 0 18px 60px #0008;
+}
+
+.login-brand {
+  margin: 0 0 17px;
+}
+
+.login-brand-header {
+  align-items: center;
+  gap: 8px;
+}
+
+.login-logo {
+  width: 30px;
+  height: 30px;
+}
+
+.login-brand h1 {
+  margin: 0;
+  transform: none;
+  color: #ddd;
+  font-size: 13px;
+  font-weight: 400;
+  letter-spacing: .16em;
+}
+
+.login-card h2 {
+  margin: 0;
+  color: #e1dfde;
+  text-align: center;
+  font-size: 21px;
+  font-weight: 500;
+}
+
+.login-subtitle {
+  margin: 7px 0 19px;
+  color: #858382;
+  text-align: center;
+  font-size: 10px;
+}
+
+.login-card form {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.login-card .form-group {
+  gap: 6px;
+  margin: 0;
+}
+
+.login-card .form-group label {
+  color: #c9c7c6;
+  font-size: 11px;
+}
+
+.login-card .form-group input {
+  width: 100%;
+  height: 38px;
+  padding: 0 11px;
+  border: 1px solid #303030;
+  border-radius: 5px;
+  outline: none;
+  background: #101010;
+  color: #eee;
+  font: 12px Arial, sans-serif;
+  transition: border-color .18s, box-shadow .18s;
+}
+
+.login-card .form-group input::placeholder {
+  color: #656363;
+}
+
+.login-card .form-group input:focus {
+  border-color: #D41514;
+  box-shadow: 0 0 0 3px rgba(212, 21, 20, .12);
+}
+
+.login-card .error-message {
+  margin-top: 0;
+  color: #D41514 !important;
+  font-size: 10px;
+}
+
+.login-card .login-button {
+  height: 42px;
+  padding: 0 14px;
+  margin-top: 3px;
+  border: 1px solid #D41514;
+  border-radius: 5px;
+  background: #D41514;
+  color: #fff;
+  font-size: 12px;
+  font-weight: 600;
+  transition: background .18s, transform .18s, box-shadow .18s;
+}
+
+.login-card .login-button img {
+  display: none;
+}
+
+.login-card .login-button span,
+.login-card .login-button:hover span {
+  opacity: 1;
+  transition: none;
+}
+
+.login-card .login-button:hover {
+  background: #b91211;
+}
+
+.login-card .login-button:focus-visible {
+  outline: 2px solid #CDCBCA;
+  outline-offset: 3px;
+  box-shadow: 0 0 0 4px rgba(212, 21, 20, .2);
+}
+
+.login-card .login-button:active {
+  transform: scale(.99);
+}
+
+@media (max-width: 480px) {
+  .login-card {
+    padding: 22px 18px;
+  }
+}
