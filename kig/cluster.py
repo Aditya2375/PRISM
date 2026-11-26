@@ -51,6 +51,9 @@ class Bus:
         self.threads = [t for t in self.threads if t.is_alive()]
 
 
+LEASE_S = 5.0  # a replica that cannot reach the primary for longer than this refuses all requests
+
+
 class Cluster:
     def __init__(self, base_dir: str | Path, replicas: tuple[str, ...] = ("node-b", "node-c"),
                  clock: Callable[[], float] = time.time, bus: Bus | None = None):
@@ -62,6 +65,7 @@ class Cluster:
             r: GuardService(base / r, clock=clock, name=r, read_only=True) for r in replicas
         }
         self.enforced_at: dict[tuple[str, str], float] = {}
+        self.last_sync: dict[str, float] = {}
         self.sync_all()
 
     @property
@@ -69,10 +73,48 @@ class Cluster:
         return {"node-a": self.primary, **self.nodes}
 
     def transport(self, node: str) -> Callable[[dict[str, Any]], dict[str, Any]]:
-        return self.all_nodes[node].handle
+        if node == "node-a":
+            return self.primary.handle
+
+        def handle(env: dict[str, Any], source: str = "local") -> dict[str, Any]:
+            # Pull on every request. If the primary cannot be reached and the last
+            # successful sync is older than the lease, fail closed.
+            if node not in self.bus.partitioned:
+                self.pull(node)
+            elif self.clock() - self.last_sync.get(node, 0.0) > LEASE_S:
+                raise Denied("node_stale", "replica cannot confirm revocation state; failing closed", 503)
+            return self.nodes[node].handle(env, source)
+
+        return handle
+
+    def tick(self) -> None:
+        """The 1 s background pull for every reachable replica."""
+        for name in self.nodes:
+            if name not in self.bus.partitioned:
+                self.pull(name)
 
     def client(self, device: Device, node: str = "node-a") -> Client:
         return Client(device, self.transport(node), self.clock, audience=node)
+
+    def benchmark_revocation(self, runs: int = 50, push_delay=(0.005, 0.05), seed: int = 1) -> dict[str, float]:
+        """Revoke a fresh device ``runs`` times; time until the LAST node rejects it (seconds)."""
+        import random
+        import statistics
+        rnd = random.Random(seed)
+        self.bus.delay_s = lambda n: rnd.uniform(*push_delay)
+        owner = Device.generate("bench-owner", "bench")
+        self.primary.bootstrap("bench", "bench-owner", owner.sign_pub, owner.kem_pub)
+        admin = self.writer(owner)
+        times = []
+        for i in range(runs):
+            d = Device.generate(f"bench-dev-{i}", "bench")
+            admin.call("enroll_device", **d.public_args())
+            self.bus.drain()
+            self.sync_all()
+            admin.call("revoke_device", device=d.device_id)
+            t = self.measure_revocation(d)
+            times.append(max(t.values()))
+        return {"runs": runs, "min_s": min(times), "median_s": statistics.median(times), "max_s": max(times)}
 
     def writer(self, device: Device) -> Client:
         """A client whose writes go through the primary and are replicated."""
@@ -83,17 +125,16 @@ class Cluster:
         snap = self.primary.export_snapshot()
         for n in self.nodes.values():
             n.install_snapshot(snap, self.primary.pub)
-        for n in self.nodes.values():
-            for cert in self.primary.all_certs():
-                n.apply_cert(cert, self.primary.pub)
+        for name in self.nodes:
+            self.pull(name)
 
     def pull(self, node: str) -> None:
         """Catch-up path for a node that missed pushes (partition healed, restart)."""
         n = self.nodes[node]
         n.install_snapshot(self.primary.export_snapshot(), self.primary.pub)
         for cert in self.primary.all_certs():
-            if self._apply(node, cert) == "revoked":
-                pass
+            self._apply(node, cert)
+        self.last_sync[node] = self.clock()
 
     def _apply(self, node: str, cert: dict[str, Any]) -> str:
         r = self.nodes[node].apply_cert(cert, self.primary.pub)

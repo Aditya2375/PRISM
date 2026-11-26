@@ -132,3 +132,23 @@ def test_request_cannot_be_replayed_on_another_node(tmp_path):
     forged = copy.deepcopy(env)
     forged["aud"] = "node-c"
     assert code(cl.nodes["node-c"].handle, forged) == "unauthorized"   # changing aud breaks the signature
+
+
+def test_partitioned_replica_fails_closed_after_lease(tmp_path):
+    from kig.cluster import LEASE_S
+    now = [1_800_000_000.0]
+    cl = Cluster(tmp_path, clock=lambda: now[0])
+    alice = Device.generate("a-laptop", "alice")
+    cl.primary.bootstrap("alice", "a-laptop", alice.sign_pub, alice.kem_pub)
+    cl.writer(alice).put_file("f", b"x", acl=["alice"])
+    cl.sync_all()
+    now[0] += 1
+    cl.bus.partitioned.add("node-b")
+    assert cl.client(alice, "node-b").fetch("f", auto_rotate=False) == b"x"        # inside lease
+    now[0] += LEASE_S + 1
+    assert code(cl.client(alice, "node-b").fetch, "f", False) == "node_stale"      # outside lease
+
+
+def test_benchmark_reports_min_median_max(tmp_path):
+    r = Cluster(tmp_path).benchmark_revocation(runs=5)
+    assert r["runs"] == 5 and 0 <= r["min_s"] <= r["median_s"] <= r["max_s"] < 1.0

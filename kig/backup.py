@@ -11,7 +11,9 @@ Format (JSON): ``{"v":1,"manifest":{...},"kem_ct":..,"blob":..,"sig":..}``
   consistency BEFORE writing anything, and only into an empty directory. Any
   failure raises ``BackupError`` and leaves the target untouched.
 * Revocations newer than the backup are never lost: pass the live ``revoked.log``
-  and it is merged into the restored state.
+  and it is merged into the restored state (union only).
+* Each backup carries a monotonic counter; restoring one older than the live
+  counter is refused unless ``allow_older`` is set.
 """
 from __future__ import annotations
 
@@ -42,8 +44,17 @@ def _ctx(manifest: dict[str, Any]) -> bytes:
     return b"kig/v1/backup|" + c.sha256_hex(c.canonical(manifest)).encode()
 
 
+def _counter(d: str | Path) -> int:
+    try:
+        return int((Path(d) / "backup.counter").read_text().strip())
+    except (OSError, ValueError):
+        return 0
+
+
 def create(svc: GuardService, backup_pub: bytes, out_path: str | Path) -> dict[str, Any]:
     with svc._lock:  # consistent snapshot
+        counter = _counter(svc.dir) + 1
+        _atomic_write(svc.dir / "backup.counter", str(counter).encode())
         payload = {
             "state": json.loads(json.dumps(svc.state)),
             "audit": list(svc.audit.entries),
@@ -51,6 +62,7 @@ def create(svc: GuardService, backup_pub: bytes, out_path: str | Path) -> dict[s
         }
         raw = c.canonical(payload)
         manifest = {
+            "counter": counter,
             "created": round(svc.clock(), 3),
             "payload_sha256": c.sha256_hex(raw),
             "audit_len": len(svc.audit.entries),
@@ -108,18 +120,26 @@ def verify_and_open(path: str | Path, backup_pub: bytes, backup_sec: bytes,
         raise BackupError("audit length or head does not match manifest")
     if state.get("applied", 0) > len(entries):
         raise BackupError("state is ahead of the audit log")
+    if not isinstance(manifest.get("counter"), int) or manifest["counter"] < 1:
+        raise BackupError("manifest has no valid monotonic counter")
+    payload["_counter"] = manifest["counter"]
     return payload
 
 
 def restore(path: str | Path, dest_dir: str | Path, backup_pub: bytes, backup_sec: bytes,
             service_pub_path: str | Path, service_key_path: str | Path,
-            live_revoked_log: str | Path | None = None) -> dict[str, Any]:
+            live_revoked_log: str | Path | None = None, live_dir: str | Path | None = None,
+            allow_older: bool = False) -> dict[str, Any]:
     """Verify, then write a fresh data directory. Returns a short report."""
     dest = Path(dest_dir)
     if dest.exists() and any(dest.iterdir()):
         raise BackupError("destination is not empty; refusing to overwrite")
     service_pub = Path(service_pub_path).read_bytes()
     payload = verify_and_open(path, backup_pub, backup_sec, service_pub)
+    counter = payload_counter = payload.get("_counter", 0)
+    if live_dir is not None and not allow_older and _counter(live_dir) > payload_counter:
+        raise BackupError(f"older backup refused: counter {payload_counter} < live counter "
+                          f"{_counter(live_dir)} (pass allow_older to override)")
     revoked = set(payload["revoked"])
     if live_revoked_log and Path(live_revoked_log).exists():
         for line in Path(live_revoked_log).read_text().splitlines():
@@ -134,4 +154,5 @@ def restore(path: str | Path, dest_dir: str | Path, backup_pub: bytes, backup_se
     st["_sig"] = c.b64e(c.sign(Path(service_key_path).read_bytes(), "state", c.canonical(payload["state"])))
     _atomic_write(dest / "state.json", json.dumps(st, sort_keys=True).encode())
     _atomic_write(dest / "revoked.log", "".join(f"{d}\t0\n" for d in sorted(revoked)).encode())
-    return {"audit_entries": len(payload["audit"]), "revoked": sorted(revoked)}
+    _atomic_write(dest / "backup.counter", str(max(counter, _counter(live_dir) if live_dir else 0)).encode())
+    return {"audit_entries": len(payload["audit"]), "revoked": sorted(revoked), "counter": counter}

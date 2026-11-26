@@ -85,3 +85,38 @@ def test_revocation_newer_than_backup_is_not_lost(w, tmp_path, bk):
 def test_refuses_to_overwrite_existing_data(w, tmp_path, bk):
     with pytest.raises(b.BackupError):
         do_restore(w, tmp_path, bk, dest="data")
+
+
+def test_fuzz_200_single_byte_flips_all_rejected_with_a_reason(w, tmp_path, bk):
+    out, pub, sec = bk
+    raw = out.read_bytes()
+    spub = (tmp_path / "data" / "server_sign.pub").read_bytes()
+    rnd = random.Random(7)
+    reasons = set()
+    for i in range(200):
+        pos = rnd.randrange(len(raw))
+        mut = bytearray(raw)
+        mut[pos] ^= 1 << rnd.randrange(8)
+        f = tmp_path / f"fz{i}.json"
+        f.write_bytes(bytes(mut))
+        with pytest.raises(b.BackupError) as ei:
+            b.verify_and_open(f, pub, sec, spub)
+        assert str(ei.value)
+        reasons.add(str(ei.value).split(":")[0])
+    assert len(reasons) >= 2
+
+
+def test_older_valid_backup_refused_unless_flagged_and_revocations_unioned(w, tmp_path, bk):
+    out, pub, sec = bk
+    w.admin.call("revoke_device", device="bob-laptop")
+    out2 = tmp_path / "bk2.json"
+    b.create(w.svc, pub, out2)
+    d = tmp_path / "data"
+    with pytest.raises(b.BackupError, match="older backup"):
+        b.restore(out, tmp_path / "r1", pub, sec, d / "server_sign.pub", d / "server_sign.key", live_dir=d)
+    rep = b.restore(out, tmp_path / "r2", pub, sec, d / "server_sign.pub", d / "server_sign.key",
+                    live_revoked_log=d / "revoked.log", live_dir=d, allow_older=True)
+    assert "bob-laptop" in rep["revoked"]            # revocations are never lost by restoring older state
+    svc2 = GuardService(tmp_path / "r2", clock=w.clock)
+    w.clock.tick(1)
+    assert code(Client(w.bob_laptop, svc2.handle, w.clock).fetch, "report") == "revoked"
