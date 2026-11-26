@@ -77,7 +77,10 @@ counter, payload hash and audit head. Restore verifies signature, tag, hashes, a
 hashes before writing anything, and only into an empty directory. An older valid backup is refused
 unless `allow_older` is set. Restore needs evidence for two guards, or an explicit `accept_rollback`:
 the counter (`min_counter`, the highest counter you know, or `live_dir`) and the live revoked log
-(`live_revoked_log`). **Record each backup counter outside the data directory**; without it nothing
+(`live_revoked_log`). `accept_counter_rollback` and `accept_lost_revocations` waive them separately
+(`accept_rollback` is both); what was waived is written into the restored audit chain as
+`restore.rollback_accepted`. The counter is kept in the signed state, so deleting `backup.counter`
+does not reset it. **Record each backup counter outside the data directory**; without it nothing
 can tell a stale backup from a fresh one. The service key is opened and matched to its public key
 before anything is written; the directory is built as `dest.partial` and renamed, and removed on
 failure. A restored `revoked.log` is timestamped with the backup creation time. 200 random single-byte
@@ -91,10 +94,18 @@ flips are all rejected (`tests/test_backup.py`).
 * Write access is owner or admin only; there are no per-user write grants. The client trusts the ACL
   and device directory the server returns, so a malicious server could add recipients to future wraps.
 * Any active device of a user can revoke all other devices of that user, by design.
-* Audit head anchor (`audit.head`, fsynced per append) detects accidental truncation. Against an
-  attacker who rewrites the whole directory, keep the head outside it and use `verify-log --expect-head`.
-* Failed authentication never locks anyone out. R2 and R3 alert only; per-device (240/min) and
-  per-source (1200/min) rate limits, a 10,000 file cap and a per-minute log budget bound abuse.
+* The log is checked at start-up against the number of entries `state.json` has seen (state is saved
+  after every logged event) and the `audit.head` copy of the last entry. That catches accidents, not
+  an attacker with write access to the directory. Keep a head outside the host (printed after each
+  backup or at shutdown) and check it with `verify-log --expect-head`.
+* Failed authentication never locks anyone out. R2 and R3 alert only. Valid-signature traffic is
+  limited per device (240/min). Failed requests share a per-source budget (1200/min) and a small
+  pre-auth log budget; events after a valid signature (revoked device, replay, stale) are logged per
+  device and are never crowded out by anonymous noise. 10,000 file cap.
+* Owner or admin compromise, server-supplied `can_rotate`, and unrecoverable files (an admin must be in
+  the ACL): see THREAT_MODEL.md. `python -m kig.cli rotate-pending` re-keys every flagged file.
+* An identical retried envelope gets 409 with no cached result. Replicas refuse a snapshot older than
+  their persisted version, which matters after the primary is restored from an old backup.
 * Backup and restore build the payload in memory (about 2.7x the data size).
 * Every mutation rewrites `state.json`, so write cost grows with the number of files. Fine for the
   prototype scale measured above, not for millions of files.
