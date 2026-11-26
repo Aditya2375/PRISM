@@ -30,6 +30,7 @@ python -m pytest -q            # the full suite
 ```
 
 * Revocation, replicas and what is simulated: `docs/REVOCATION.md`.
+* How this relates to Vault and Sigstore Rekor: `docs/RELATED.md`.
 * Storage, journal, backup, the signed manifest and the standalone verifier (`verifier/prism_verify.py`): `docs/CORE.md`.
 * Cryptography, known-answer tests, naming: `docs/CRYPTO.md`.
 * Assets, attackers and limits: `THREAT_MODEL.md`. Reporting a problem: `SECURITY.md`.
