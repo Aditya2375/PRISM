@@ -38,7 +38,7 @@ Same story output, steps 7 and 8:
 Say: "A crash never loses or half-applies a rotation."
 
 ## 4. Revocation across 3 real nodes (60 s)
-Command: `python -m kig.demo --net`   (takes about 10 s)
+Command: `python -m kig.demo --net`   (takes about 7 s)
 
 Expected shape of the output:
 ```
@@ -49,7 +49,7 @@ Expected shape of the output:
 "partition": { "node": "node-c", "inside_lease": "served", "after_lease": "node_stale", "after_heal": "revoked" }
 ```
 Say: "These are three separate operating-system processes talking over TCP. The lost device is refused on all
-three, on this machine in tens of milliseconds (we measured a median of roughly 40 to 50 ms)."
+three, on this machine in tens of milliseconds (about 35 ms on the machine we measured; the run prints the current figure)."
 
 Then the partition line: "Cut one node off from the primary. For the length of its lease, 2 seconds in this
 test, it can still serve the lost device. After the lease it refuses everyone with `node_stale`. When the

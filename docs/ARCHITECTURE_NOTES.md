@@ -22,7 +22,7 @@ pulls a signed snapshot, certificates and blobs, and carries a signed freshness 
 confirmed it is current within its lease refuses every request with `node_stale`: it fails closed. A replica cut
 off from the primary can therefore still serve a lost device for up to one lease (2 seconds in the real-process
 test, 5 seconds in the in-process simulation), and after that it serves nobody until it syncs. On one machine, a
-revocation reached the last node in about 40 to 50 ms at the median; `python -m kig.netcluster` prints the
+revocation reached the last node in tens of milliseconds, about 35 ms on the machine we measured; `python -m kig.netcluster` prints the
 current figure.
 
 ## What this does not protect against
@@ -33,7 +33,3 @@ traffic is plain HTTP and needs TLS across hosts, and the cluster token is share
 snapshots. The root of trust is trust on first use unless a fingerprint is pinned out of band. A stolen full
 admin device remains an admin until the host removes it. Python cannot wipe key material from memory, and no
 hardware key store driver is shipped.
-
-## Note for the brief owner
-`docs/BRIEF.md`, `docs/CORE_HARDENING.md` and `README.md` still say the cluster is an in-process simulation.
-`docs/REVOCATION.md` now describes both the simulation and the real three-process version.

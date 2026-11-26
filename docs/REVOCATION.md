@@ -1,8 +1,10 @@
 # Three-node revocation: what is enforced, what is tested, what is not
 
-One primary (`node-a`) takes writes. Two read replicas (`node-b`, `node-c`) serve reads. All three run in one
-process with their own data directories, keys and audit logs, and a message bus that can delay, drop and partition.
-This is a simulation of the replication logic. It is not a deployment, and the timings are not network timings.
+One primary (`node-a`) takes writes. Two read replicas (`node-b`, `node-c`) serve reads. Each node has its own data
+directory, keys and audit log. The cluster exists in two forms. The first is an in-process simulation (`kig/cluster.py`),
+where all three nodes share one process and a message bus that can delay, drop and partition; it is the fast-test path
+and its timings are not network timings. The second is three real OS processes over TCP on localhost, described in the
+real-process section below. Neither is a multi-host deployment.
 
 ## How revocation reaches a node
 

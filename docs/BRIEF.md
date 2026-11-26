@@ -39,7 +39,7 @@ someone who does not trust the service.**
 pip install -r requirements.txt
 python -m kig.demo --story     # lost phone, 3 simulated nodes, tamper, crash and recovery, claim-to-evidence table
 python -m kig.demo --net       # revocation across 3 real node processes over TCP on localhost
-python -m pytest -q            # 480 tests, green on a clean clone
+python -m pytest -q            # 500+ tests, green on a clean clone
 ```
 
 ## Evidence, not assertion

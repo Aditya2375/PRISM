@@ -13,7 +13,7 @@ DevForge Yugaantar, Track 4: Post-Quantum Security ("Trust, But Verify").
 ```bash
 pip install -r requirements.txt
 python -m kig.demo --story     # lost phone, 3 simulated nodes, tamper, crash and recovery, claim-to-evidence table
-python -m kig.demo --net       # the same revocation across 3 real node processes over TCP on localhost (about 10 s)
+python -m kig.demo --net       # the same revocation across 3 real node processes over TCP on localhost (about 7 s)
 python -m kig.bench            # measured cost of put, fetch, rotate, backup, restore
 python -m pytest -q            # the full suite
 ```
