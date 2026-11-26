@@ -9,9 +9,10 @@ Two things are measured, both on a fresh in-process service with a controllable 
   machine, and seconds on the service clock (the clock the rules use). Rules that need several events (a burst)
   cannot alert before the last one, so the service-clock time is the honest figure for those.
 
-Precision, recall and F1 are computed over all repetitions. Three scenarios are ones the rules are NOT built to
-catch (a slow guessing attack under the burst threshold, a member probing files outside its list, a valid admin
-reading everything). They stay in the denominator, so recall is below 1 on purpose.
+Precision, recall and F1 are computed over all repetitions. Two scenarios are ones the rules are NOT built to
+catch (a member probing files outside its list, which is denied and not an access pattern, and a valid insider
+reading one new file every ten minutes, which stays under every window). They stay in the denominator, so recall
+is below 1 on purpose.
 
 The scenarios are written by the authors of the rules. The numbers say what these rules do on these traces. They are
 not a claim about real traffic. Wall times depend on the machine.
@@ -173,7 +174,7 @@ def s_slow_guessing(w: _World) -> str:
             w.send(env, "203.0.113.9")
             w.clock.tick(25)
         w.clock.tick(15)
-    return "R3-AUTH-FAILURE-BURST"
+    return "R8-SLOW-GUESSING"
 
 
 def s_probe_outside_acl(w: _World) -> str:
@@ -184,10 +185,42 @@ def s_probe_outside_acl(w: _World) -> str:
 
 
 def s_valid_admin_reads_all(w: _World) -> str:
-    for i in range(5):
+    """A valid admin device reads 20 files inside a minute: every read is allowed, the volume is the signal."""
+    for i in range(20):
         w.admin.put_file(f"f{i}", b"x", acl=["alice"])
-    for i in range(5):
+    w.mark()
+    for i in range(20):
         w.admin.fetch(f"f{i}")
+        w.clock.tick(1)
+    return "R7-BULK-READ"
+
+
+def s_lateral(w: _World) -> str:
+    """bob has used two files for days, then reads five files he never touched, inside five minutes."""
+    for i in range(5):
+        w.admin.put_file(f"hr{i}", b"x", acl=["alice", "bob"])
+    w.admin.put_file("handbook", b"x", acl=["alice", "bob"])
+    for f in ("report", "handbook", "report"):
+        w.bob.fetch(f, auto_rotate=False)
+        w.clock.tick(3600)
+    w.mark()
+    for i in range(5):
+        w.bob.fetch(f"hr{i}", auto_rotate=False)
+        w.clock.tick(5)
+    return "R6-LATERAL-MOVEMENT"
+
+
+def s_slow_reads(w: _World) -> str:
+    """A valid insider reads one new file every ten minutes: under every window, so no rule fires."""
+    for i in range(8):
+        w.admin.put_file(f"q{i}", b"x", acl=["alice", "bob"])
+    w.admin.put_file("handbook", b"x", acl=["alice", "bob"])
+    for f in ("report", "handbook"):
+        w.bob.fetch(f, auto_rotate=False)
+        w.clock.tick(3600)
+    for i in range(8):
+        w.bob.fetch(f"q{i}", auto_rotate=False)
+        w.clock.tick(600)
     return "NONE-EXPECTED-TO-MISS"
 
 
@@ -199,9 +232,11 @@ SCENARIOS: list[tuple[str, Callable[[_World], str], bool]] = [
     ("flood of unknown device ids (summary alert)", s_junk_flood, True),
     ("fresh account promoted to admin", s_fresh_admin, True),
     ("admin device removes the owner's limited phone", s_stolen_admin_removes_phone, True),
-    ("slow guessing: 2 bad signatures per 65 s for 11 minutes", s_slow_guessing, False),
+    ("slow guessing: 2 bad signatures per 65 s for 11 minutes", s_slow_guessing, True),
+    ("valid admin device reads 20 files in under a minute", s_valid_admin_reads_all, True),
+    ("valid member reads 5 files it never read before", s_lateral, True),
     ("member probes a file outside its list", s_probe_outside_acl, False),
-    ("valid admin device reads many files", s_valid_admin_reads_all, False),
+    ("valid insider reads one new file every 10 minutes", s_slow_reads, False),
 ]
 
 

@@ -435,8 +435,8 @@ class Client:
             raise
         self._save_pins()
 
-    def _check_devices(self, devs: dict[str, str]) -> None:
-        """Every recipient key must belong to a device the root vouches for."""
+    def _check_devices(self, devs: dict[str, str], acl: list[str] | None = None) -> None:
+        """Every recipient key must belong to a device the root vouches for, and, when the ACL is given, to a user on it."""
         if not self.verify_directory:
             return
         self._ensure_roots()
@@ -450,13 +450,15 @@ class Client:
                 if kem != c.b64e(self.dev.kem_pub):
                     raise c.CryptoError("the server listed a different key for this device")
                 continue
-            _, _, kp = self._prove(d, dirm) if d not in self._trusted else self._trusted[d]
+            duser, _, kp = self._prove(d, dirm) if d not in self._trusted else self._trusted[d]
+            if acl is not None and duser not in acl:
+                raise c.CryptoError(f"the server listed device {d} of user {duser}, who is not on the file's access list")
             if kp != kem:
                 raise c.CryptoError(f"the key listed for device {d} differs from the one in its signed enrolment")
 
     def _recipients(self, acl: list[str]) -> dict[str, str]:
         devs = self.call("eligible", users=acl)["devices"]
-        self._check_devices(devs)
+        self._check_devices(devs, acl)
         return devs
 
     # -- file operations -------------------------------------------------------
