@@ -43,4 +43,5 @@
 .ad-x{display:grid;place-items:center}
 .ad-modal button:focus-visible,.selection-card:focus-visible,.selection-back button:focus-visible{outline:2px solid #d54441;outline-offset:2px}
 .selection-options{align-items:stretch}
-.selection-card{justify-content:flex-start}
+.selection-card{display:flex;flex-direction:column;justify-content:flex-start;align-items:center}
+.selection-card p{min-height:4.5em}
