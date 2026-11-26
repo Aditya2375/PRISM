@@ -477,7 +477,7 @@ def test_p1_more_than_four_churn_restarts_still_finish_within_the_time_budget(nc
         out = real(method, url, token, body, timeout)
         if "/sync/blobs" in url and seen["n"] < 6:
             seen["n"] += 1
-            out = {"blobs": out["blobs"], "gone": ["0" * 64]}      # the primary says something moved, six times in a row
+            out = {"blobs": {}, "gone": ["0" * 64]}                   # the primary says something moved, six times in a row
         return out
 
     monkeypatch.setattr(kn, "_http", churn)
