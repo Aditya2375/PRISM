@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Card, Pill, TopBar } from "./ui";
+import { Card, TopBar } from "./ui";
 import { clip, fingerprintGroups, labelFor, when } from "./format";
 import { toBase64 } from "./api";
 
@@ -86,79 +86,80 @@ export default function Member({ api, onSignOut }) {
 
   if (!me) {
     return (
-      <main className="dash"><Head title="Member console" right={null} />
-        {msg.text ? <p className="err" role="alert">{msg.text}</p> : <div className="skel" aria-busy="true" aria-label="Connecting to the local backend"><i /><i /><i /></div>}
-      </main>);
+      <><TopBar title="Device holder" right={<button className="btn ghost" onClick={onSignOut}>Sign out</button>} />
+        <main className="page">{msg.text ? <p className="notice err" role="alert">{msg.text}</p> : <div className="skel" aria-busy="true" aria-label="Connecting to the local backend"><i /><i /><i /></div>}</main></>);
   }
   const groups = fingerprintGroups(preview?.fingerprint);
 
   return (
-    <main className="dash">
-      <Head title={me.role === "admin" ? "Admin" : "Member"} right={<button className="ghost" onClick={onSignOut}>Sign out</button>} />
-      <div style={{ marginBottom: 24 }}><h1>{clip(me.user, 64)}</h1>
-        <div className="note" style={{ margin: 0 }}>signed in on <span className="mono">{clip(me.device, 64)}</span> as {clip(me.role, 16)}. Keys stay on this machine.</div></div>
-      {msg.text && <p className={msg.kind} role={msg.kind === "err" ? "alert" : "status"}>{msg.text}</p>}
+    <>
+    <TopBar title={me.role === "admin" ? "Device holder, admin" : "Device holder"} right={<button className="btn ghost" onClick={onSignOut}>Sign out</button>} />
+    <main className="page" id="top">
+      <div className="who"><h1>{clip(me.user, 64)}</h1>
+        <div className="muted">signed in on <span className="mono">{clip(me.device, 64)}</span> as {clip(me.role, 16)}. Keys stay on this machine.</div></div>
+      {msg.text && <p className={`notice ${msg.kind === "err" ? "err" : "good"}`} role={msg.kind === "err" ? "alert" : "status"}>{msg.text}</p>}
 
-      <div className="grid">
-        <section className="card"><h2>My files</h2>
+      <div className="two">
+        <Card title="My files">
           <table className="files-table"><thead><tr><th>File</th><th>Version</th><th>State</th><th /></tr></thead><tbody>
             {files.map((f) => (
               <tr key={f.file_id}><td className="mono">{clip(f.file_id, 64)}</td><td>epoch {Number(f.epoch) || 0}</td>
                 <td>{f.needs_rotation ? <span className="pill warn">re-key pending</span> : <span className="pill ok">current</span>}</td>
-                <td className="actions">{f.has_key ? <button className="ghost" onClick={() => download(f.file_id)}>Download</button> : <span className="note">no key on this device yet</span>}
-                  {f.can_rotate && <button className="ghost danger" onClick={() => removeFile(f.file_id)}>Delete</button>}</td></tr>))}
+                <td className="actions">{f.has_key ? <button className="btn ghost" onClick={() => download(f.file_id)}>Download</button> : <span className="muted small">no key on this device yet</span>}
+                  {f.can_rotate && <button className="btn ghost danger" onClick={() => removeFile(f.file_id)}>Delete</button>}</td></tr>))}
           </tbody></table>
           {files.length === 0 && <div className="empty">No files yet. Upload one and it is encrypted here first.</div>}
-        </section>
-        <section className="card"><h2>Upload</h2>
+        </Card>
+        <Card title="Upload">
           <div className="row"><input ref={fileInput} type="file" aria-label="File to upload" /></div>
           <div className="row" style={{ marginTop: 10 }}>
             <input value={name} onChange={(e) => setName(e.target.value)} placeholder="file name" aria-label="File name" maxLength={64} />
             <input value={share} onChange={(e) => setShare(e.target.value)} placeholder="share with (user names, comma separated)" aria-label="Share with" style={{ flex: 1 }} />
           </div>
-          <div style={{ marginTop: 12 }}><button onClick={upload}>Encrypt and upload</button></div>
-          <p className="note">The file is encrypted on this machine. The server only ever receives ciphertext.</p>
-        </section>
+          <div style={{ marginTop: 12 }}><button className="btn primary" onClick={upload}>Encrypt and upload</button></div>
+          <p className="muted small">The file is encrypted on this machine. The server only ever receives ciphertext.</p>
+        </Card>
       </div>
 
-      <div className="grid">
-        <section className="card"><h2>My devices</h2>
+      <div className="two">
+        <Card title="My devices">
           <table><thead><tr><th>Device</th><th>Status</th><th /></tr></thead><tbody>
             {devices.map((d) => (
               <tr key={d.device} className={d.status !== "active" ? "hl" : ""}><td className="mono">{clip(d.device, 64)}{d.this ? " (this one)" : ""}</td>
                 <td><span className={`pill ${d.status === "active" ? "active" : "lost"}`}>{clip(d.status, 16)}</span></td>
-                <td>{d.status !== "active" ? <span className="note">blocked</span>
-                  : me.role === "admin" && !d.this && !d.limited ? <span className="note">full admin device: removed by another admin or the operator</span>
-                  : <button className="danger" onClick={() => reportLost(d.device)}>Report lost</button>}</td></tr>))}
+                <td>{d.status !== "active" ? <span className="muted small">blocked</span>
+                  : me.role === "admin" && !d.this && !d.limited ? <span className="muted small">full admin device: removed by another admin or the operator</span>
+                  : <button className="btn danger" onClick={() => reportLost(d.device)}>Report lost</button>}</td></tr>))}
           </tbody></table>
-          <p className="note">A lost device keeps anything it already decrypted. Reporting it stops all later access.{me.role === "admin" && " Phones enrolled as limited can be removed here. A full admin device is removed by another admin, or offline by the operator with kig revoke-device, so a stolen device cannot lock you out."}</p>
-        </section>
+          <p className="muted small">A lost device keeps anything it already decrypted. Reporting it stops all later access.{me.role === "admin" && " Phones enrolled as limited can be removed here. A full admin device is removed by another admin, or offline by the operator with kig revoke-device, so a stolen device cannot lock you out."}</p>
+        </Card>
         {me.role === "admin" && (
-          <section className="card"><h2>Enrol a new device</h2>
+          <Card title="Enrol a new device">
             {me.fingerprint && (
               <div className="rootbox"><small>Your device fingerprint (a new device pins this as its root)</small>
                 <span className="mono">{clip(me.fingerprint, 100)}</span></div>)}
-            <p className="note" style={{ marginTop: 0 }}>Give that fingerprint to the new device’s owner by voice or in person, never through this service. 1. On the new device run keygen and paste the JSON it prints. 2. Read the fingerprint it shows on its own screen and type it here.</p>
+            <p className="muted small" style={{ marginTop: 0 }}>Give that fingerprint to the new device’s owner by voice or in person, never through this service. 1. On the new device run keygen and paste the JSON it prints. 2. Read the fingerprint it shows on its own screen and type it here.</p>
             <textarea value={pubText} onChange={(e) => setPubText(e.target.value)} rows={3} style={{ width: "100%" }} aria-label="New device public data" />
-            <div style={{ margin: "8px 0" }}><button className="ghost" onClick={doPreview}>Show fingerprint</button></div>
+            <div style={{ margin: "8px 0" }}><button className="btn ghost" onClick={doPreview}>Show fingerprint</button></div>
             {groups.length === 8 && (<>
               <div className="fp mono">{groups.map((g) => <span key={g}>{g}</span>)}</div>
               <div className="row"><input className="mono" value={typedFp} onChange={(e) => setTypedFp(e.target.value)} placeholder="fingerprint shown on the new device" aria-label="Fingerprint shown on the new device" style={{ flex: 1 }} autoComplete="off" />
-                <button onClick={doEnroll}>Compare and enrol</button></div>
-              <label className="note" style={{ display: "flex", gap: 10, alignItems: "center", cursor: "pointer" }}>
+                <button className="btn primary" onClick={doEnroll}>Compare and enrol</button></div>
+              <label className="muted small" style={{ display: "flex", gap: 10, alignItems: "center", cursor: "pointer" }}>
                 <input type="checkbox" checked={limited} onChange={(e) => setLimited(e.target.checked)} style={{ width: 16, height: 16, padding: 0 }} />
                 Limited device (a phone): acts as a plain member, so you can remove it from here if it is lost.</label>
-              <p className="note">A mismatch is refused. There is no way to skip the check from this screen.</p></>)}
-          </section>)}
+              <p className="muted small">A mismatch is refused. There is no way to skip the check from this screen.</p></>)}
+          </Card>)}
       </div>
 
-      <section className="card"><h2>My recent activity</h2>
+      <Card title="My recent activity">
         <table><thead><tr><th>Time</th><th>What happened</th><th>Device</th></tr></thead><tbody>
           {activity.map((e) => (
             <tr key={e.seq} className={e.type.startsWith("auth.") ? "hl" : ""}><td className="mono">{when(e.ts)}</td><td>{labelFor(e.type)}{e.data?.file ? `: ${clip(e.data.file, 64)}` : ""}</td><td className="mono">{clip(e.data?.device ?? e.actor, 64)}</td></tr>))}
         </tbody></table>
         {activity.length === 0 && <div className="empty">Nothing yet.</div>}
-      </section>
+      </Card>
     </main>
+    </>
   );
 }
