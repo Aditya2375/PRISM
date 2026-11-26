@@ -62,8 +62,15 @@ the file itself is not tamper-proof against someone who can rewrite the whole da
 Replica fields (`snapshot_version`, `epoch_floor`) are persisted in the signed state.
 
 ## Storage
-* `state.json`: metadata and wrapped keys, signed with ML-DSA, written by temp file, fsync, atomic
-  rename and directory fsync. A bad signature stops start-up (`StateCorrupt`).
+* `state.json` is a full snapshot (users, devices, files with their wrapped keys), signed with ML-DSA, written
+  by temp file, fsync, atomic rename and directory fsync. `state.wal` is an append-only journal: each line holds
+  only the records that changed, is signed on its own, names the snapshot it extends and the hash of the line
+  before it. Start-up verifies the snapshot, then every line (signature, snapshot id, sequence, hash chain) and
+  replays them. A bad signature, a line changed, reordered or removed from the middle stops start-up
+  (`StateCorrupt`). A torn last line was never acknowledged and is cut off. A new snapshot is written after
+  1000 lines or 16 MB, which keeps replay short (`kig/store.py`, `tests/test_store.py`).
+* Changed records are found by the state containers themselves (nested edits are noticed), and a test reloads
+  the directory after random operations and compares it with memory.
 * `blobs/xx/<sha256>`: ciphertext, content addressed, fsynced before the state that references it,
   verified against its hash on every read (`storage_corrupt` fails closed and is logged). The
   previous version is removed after the next rotation; orphans from a crash are deleted at start-up.
@@ -109,7 +116,11 @@ flips are all rejected (`tests/test_backup.py`).
 * An identical retried envelope gets 409 with no cached result. Replicas accept a snapshot only if
   (restore generation, audit length) strictly advances, so a restored primary converges.
 * Backup and restore build the payload in memory (about 2.7x the data size).
-* Every mutation rewrites `state.json`, so write cost grows with the number of files. Fine for the
-  prototype scale measured above, not for millions of files.
+* A write costs time proportional to the size of the changed records, not the number of files: `put_file` took
+  5.6 to 7.4 ms at 300, 600, 900, 1200 and 1500 files (it was 24.5 to 99.9 ms with whole-state rewrites).
+  Every 1000 journal lines a full snapshot is written, a pause that grows with total state size. Start-up
+  reads all records. Rolling back the journal tail (deleting its last lines) is the same class of attack as
+  restoring an old `state.json`: revocations survive it because `revoked.log` is separate, and the audit log
+  being ahead of state is detected.
 * Single host. The cluster nodes in `kig/cluster.py` are in-process simulations with their own data
   directories, not separate machines.
