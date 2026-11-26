@@ -151,11 +151,25 @@ class NetCluster:
 
     # -- lifecycle -----------------------------------------------------------
     def start(self, wait: bool = True) -> "NetCluster":
-        try:
-            self._start(wait)
-        except BaseException:
-            self.stop()                          # never leave node processes behind
-            raise
+        """Start the three processes. A node that exits early or is not ready (for example a port taken between choosing
+        it and binding it, or a slow machine) makes the whole start run again on fresh ports, up to three times."""
+        import shutil
+        for attempt in range(3):
+            try:
+                self._start(wait)
+                return self
+            except RuntimeError:
+                self.stop()
+                if attempt == 2:
+                    raise
+            except BaseException:
+                self.stop()                      # never leave node processes behind
+                raise
+            for n in NODES:
+                shutil.rmtree(self.base / n, ignore_errors=True)
+            self.ports = {n: _free_port() for n in NODES}
+            self.url = {n: f"http://127.0.0.1:{p}" for n, p in self.ports.items()}
+            self.procs, self.relays, self.logs = {}, {}, {}
         return self
 
     def _start(self, wait: bool) -> None:

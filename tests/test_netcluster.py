@@ -483,3 +483,19 @@ def test_p1_more_than_four_churn_restarts_still_finish_within_the_time_budget(nc
     monkeypatch.setattr(kn, "_http", churn)
     node.pull()
     assert seen["n"] == 6 and rep.last_sync is not None and "doc" in rep.state["files"]
+
+
+def test_start_retries_on_fresh_ports_when_a_node_is_not_ready(tmp_path, boss, monkeypatch):
+    calls = {"n": 0}
+    real = NetCluster._wait_ready
+
+    def flaky(self, name, timeout=30.0):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("simulated: node-a did not start")
+        return real(self, name, timeout)
+
+    monkeypatch.setattr(NetCluster, "_wait_ready", flaky)
+    with NetCluster(tmp_path, boss, lease_s=2.0) as nc:
+        assert code_of(nc.client(boss)) == "served" and code_of(nc.client(boss, "node-c")) == "served"
+        assert calls["n"] > 1
