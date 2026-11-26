@@ -107,7 +107,8 @@ def test_my_devices_shows_only_my_own_and_no_keys(tmp_path):
     assert {d["device"] for d in out["devices"]} == {"asha-laptop", "asha-phone"}
     assert [d["this"] for d in out["devices"]] == [True, False]
     assert "ravi-laptop" not in json.dumps(out)
-    assert all(set(d) == {"device", "status", "enrolled_at", "this"} for d in out["devices"])
+    assert all(set(d) == {"device", "status", "enrolled_at", "this", "limited"} for d in out["devices"])
+    assert all(isinstance(d["limited"], bool) for d in out["devices"])
     assert [d["device"] for d in web(r).get("/devices", headers=H).json()["devices"]] == ["ravi-laptop"]
 
 

@@ -1257,7 +1257,8 @@ class GuardService:
 
     def cmd_my_devices(self, dev, user, role, args):
         """The caller's own devices only: id, status, enrolment time. No keys, no other user's devices."""
-        return {"devices": [{"device": d, "status": v["status"], "enrolled_at": v.get("enrolled_at"), "this": d == dev}
+        return {"devices": [{"device": d, "status": v["status"], "enrolled_at": v.get("enrolled_at"), "this": d == dev,
+                             "limited": bool(v.get("limited"))}
                             for d, v in sorted(self.state["devices"].items()) if v["user"] == user]}
 
     def cmd_my_activity(self, dev, user, role, args):
