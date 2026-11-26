@@ -51,10 +51,19 @@ def test_crash_during_revocation_never_loses_it(w, tmp_path, point):
     assert code(stolen.fetch, "report") == "revoked"
 
 
+def _state_files(d):
+    return (d / "state.json").read_text(), ((d / "state.wal").read_text() if (d / "state.wal").exists() else "")
+
+
+def _put_state_files(d, snap, wal):
+    (d / "state.json").write_text(snap)
+    (d / "state.wal").write_text(wal)
+
+
 def test_state_file_rollback_cannot_resurrect_a_revoked_device(w, tmp_path):
-    stale_state = (tmp_path / "data" / "state.json").read_text()
+    stale = _state_files(tmp_path / "data")
     w.admin.call("revoke_device", device="alice-phone")
-    (tmp_path / "data" / "state.json").write_text(stale_state)   # attacker or bad restore
+    _put_state_files(tmp_path / "data", *stale)   # attacker or bad restore
     # the audit log is now ahead of state, and revoked.log has the device
     svc2 = restart(w, tmp_path)
     assert svc2.state["devices"]["alice-phone"]["status"] != "active"
@@ -64,9 +73,10 @@ def test_state_file_rollback_cannot_resurrect_a_revoked_device(w, tmp_path):
 def test_tampered_state_file_is_refused_not_used(w, tmp_path):
     from kig.service import StateCorrupt
     d = tmp_path / "data"
-    st = json.loads((d / "state.json").read_text())
-    st["devices"]["alice-phone"]["status"] = "active"
-    st["devices"]["alice-phone"]["status"] = "active"
+    w.svc.store.force_snapshot = True
+    w.svc._persist()                                           # full snapshot on disk
+    good = _state_files(d)
+    st = json.loads(good[0])
     st["users"]["bob"]["role"] = "admin"                       # privilege edit on disk
     (d / "state.json").write_text(json.dumps(st))
     with pytest.raises(StateCorrupt):
@@ -76,11 +86,41 @@ def test_tampered_state_file_is_refused_not_used(w, tmp_path):
         restart(w, tmp_path)
 
 
+def test_tampered_or_reordered_journal_is_refused(w, tmp_path):
+    from kig.service import StateCorrupt
+    d = tmp_path / "data"
+    snap, wal = _state_files(d)
+    lines = wal.splitlines()
+    assert len(lines) >= 3
+    doc = json.loads(lines[1])
+    doc["e"]["sec"].setdefault("users", {})["bob"] = {"role": "admin", "active": True}
+    bad = [lines[0], json.dumps(doc)] + lines[2:]
+    _put_state_files(d, snap, "\n".join(bad) + "\n")
+    with pytest.raises(StateCorrupt):
+        restart(w, tmp_path)
+    _put_state_files(d, snap, "\n".join([lines[1], lines[0]] + lines[2:]) + "\n")   # reordered
+    with pytest.raises(StateCorrupt):
+        restart(w, tmp_path)
+    _put_state_files(d, snap, "\n".join([lines[0]] + lines[2:]) + "\n")             # entry removed from the middle
+    with pytest.raises(StateCorrupt):
+        restart(w, tmp_path)
+
+
+def test_torn_journal_tail_is_dropped_and_next_write_is_clean(w, tmp_path):
+    d = tmp_path / "data"
+    with open(d / "state.wal", "ab") as fh:
+        fh.write(b'{"e": {"base": "x", "seq"')
+    svc2 = restart(w, tmp_path)
+    w.clock.tick(1)
+    Client(w.alice_laptop, svc2.handle, w.clock).call("create_user", user="carol", role="member")
+    assert restart(w, tmp_path).state["users"]["carol"]["role"] == "member"
+
+
 def test_revoked_set_is_enforced_when_state_is_restored_from_old_signed_copy(w, tmp_path):
     d = tmp_path / "data"
-    old = (d / "state.json").read_text()                        # valid, signed, but before the revoke
+    old = _state_files(d)                                       # valid, signed, but before the revoke
     w.admin.call("revoke_device", device="alice-phone")
-    (d / "state.json").write_text(old)
+    _put_state_files(d, *old)
     svc2 = restart(w, tmp_path)
     assert svc2.state["devices"]["alice-phone"]["status"] != "active"
 
@@ -89,9 +129,9 @@ def test_rolling_back_state_and_audit_together_is_refused_at_start(w, tmp_path):
     import pytest
     from kig.audit import AuditError
     d = tmp_path / "data"
-    old = (d / "state.json").read_text()
+    old = _state_files(d)
     w.admin.call("revoke_device", device="alice-phone")
-    (d / "state.json").write_text(old)
+    _put_state_files(d, *old)
     lines = (d / "audit.jsonl").read_text().splitlines()
     n = next(i for i, l in enumerate(lines) if json.loads(l)["type"] == "device.revoked")
     (d / "audit.jsonl").write_text("\n".join(lines[:n]) + "\n")   # audit also rolled back: head anchor disagrees
