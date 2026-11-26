@@ -38,7 +38,7 @@
 - **Nonces are kept in memory.** A restart is covered by refusing older timestamps; a multi-node deployment would need a shared store.
 - **Metadata is visible to the service:** file ids, ACLs, device ids, access times.
 - **Rule-based detection only.** It catches the listed patterns, not novel behaviour. No ML by design.
-- **Single-node, single-file-store.** State is one JSON file with atomic replace; throughput and file size (5 MB cap) are prototype-grade.
+- **Single-node, single-file-store.** State is one JSON file with atomic replace; throughput and file size (about 5 MB per file, checked on the ciphertext) are prototype-grade.
 - **Availability:** a stolen request cannot lock out a victim's device. Nobody is locked out by failures. Valid-signature traffic has a per-device budget (240/min). Failed or unauthenticated requests share a per-source budget (1200/min) and a small pre-auth log budget. Events after a valid signature (revoked device use, replay, stale, wrong audience) are logged per device and never share the anonymous budget. A 10,000 file cap bounds state size. Signature checks still cost CPU, so a distributed flood can slow the service.
 - **Behind a proxy:** with `KIG_TRUSTED_PROXY=1` the source is the address the trusted proxy appended (hop `KIG_PROXY_HOPS` from the right, default 1). Never enable it without a proxy that overwrites or appends X-Forwarded-For.
 - **Retries:** an identical envelope resent from the same source gets a 409 `replay` with no cached result; the client should build a new envelope.
