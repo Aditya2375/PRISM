@@ -78,10 +78,15 @@ Replica fields (`snapshot_version`, `epoch_floor`) are persisted in the signed s
   rotate 17 ms.
 
 ## Backup and restore
-Canonical payload (state, audit log, revoked set, blobs), sealed with a random AES-256-GCM key that is
-wrapped to the backup public key, then ML-DSA signed together with a manifest holding a monotonic
-counter, payload hash and audit head. Restore verifies signature, tag, hashes, audit chain and blob
-hashes before writing anything, and only into an empty directory. An older valid backup is refused
+A backup is a standard tar archive: `manifest.json`, `meta.sealed.json` and `blobs/<sha256>`. The metadata
+(state, audit log, revoked set) is sealed with a random AES-256-GCM key that is wrapped to the backup public
+key. Blobs are already ciphertext made on the clients and are named by their hash, so they are copied from disk
+one file at a time, not re-encrypted. The manifest lists every blob hash, a monotonic counter, the audit length
+and head and the hash of the sealed metadata, and is ML-DSA signed with the service key. Restore verifies the
+signature, the metadata tag, the audit chain and a streamed hash of every blob before writing anything, and
+only into an empty directory. Only the three expected member kinds are accepted (no paths, links or extras).
+Memory follows the size of the metadata, not of the stored data (`test_backup_memory_does_not_grow_with_blob_size`
+holds a 30 MB backup under 12 MB of peak allocations). The service pauses writes while a backup is built. An older valid backup is refused
 unless `allow_older` is set. Restore needs evidence for two guards, or an explicit `accept_rollback`:
 the counter (`min_counter`, the highest counter you know, or `live_dir`) and the live revoked log
 (`live_revoked_log`). `accept_counter_rollback` and `accept_lost_revocations` waive them separately
@@ -115,7 +120,8 @@ flips are all rejected (`tests/test_backup.py`).
   global cap of 300 per minute.
 * An identical retried envelope gets 409 with no cached result. Replicas accept a snapshot only if
   (restore generation, audit length) strictly advances, so a restored primary converges.
-* Backup and restore build the payload in memory (about 2.7x the data size).
+* Backup holds the metadata (state, audit log) in memory while sealing it, so memory grows with the number of
+  files and audit entries, not with blob bytes.
 * A write costs time proportional to the size of the changed records, not the number of files: `put_file` took
   5.6 to 7.4 ms at 300, 600, 900, 1200 and 1500 files (it was 24.5 to 99.9 ms with whole-state rewrites).
   Every 1000 journal lines a full snapshot is written, a pause that grows with total state size. Start-up

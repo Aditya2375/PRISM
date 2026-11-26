@@ -49,4 +49,4 @@
 - **Client trust in the server:** the client uses the ACL and device directory the server supplies, so a malicious server can add recipients to future wraps. Out-of-band fingerprints would be the fix.
 - **Revoke scope:** any active device of a user can revoke all other devices of that user, by design (lost-phone recovery from the laptop).
 - **Write roles:** ACL members read. Only the file owner or an admin can write or rotate. Each version carries a key-commitment tag, so a wrong key is rejected rather than decrypting garbage.
-- **Backup memory:** backup and restore hold the whole payload in RAM (about 2.7x the data size). Streaming is not implemented.
+- **Backup memory:** blobs are streamed; the sealed metadata (state and audit log) is held in memory, so memory grows with the number of files and audit entries, not with stored bytes. Writes pause while a backup is built. The backup contains client ciphertext, so blob confidentiality rests on the clients' encryption, and the metadata is sealed to the backup key.
