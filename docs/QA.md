@@ -64,7 +64,7 @@ Removing the last entries together with the anchor is not, unless you hold a hea
 
 **Can I check evidence without trusting your code?** Yes: `verifier/prism_verify.py` imports nothing from the service.
 Exit 0 means complete, 1 a failed check, 2 verified but completeness unknown. `docs/CORE.md`,
-`tests/test_standalone_verifier.py`, `tests/test_r_poc.py`.
+`tests/test_standalone_verifier.py`.
 
 ## Crashes, restores and keys
 
