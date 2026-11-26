@@ -42,6 +42,8 @@ def main(argv: list[str] | None = None) -> int:
     p = sub.add_parser("verify-log", help="verify the signed key-event log offline")
     p.add_argument("--data", required=True)
     p.add_argument("--expect-head", default=None, help="head hash recorded elsewhere; detects tail truncation")
+    p = sub.add_parser("doctor", help="check a data directory: state, audit chain, blobs, permissions")
+    p.add_argument("--data", required=True)
     p = sub.add_parser("rotate-pending", help="re-key every file flagged needs_rotation that this device may rotate")
     p.add_argument("--url", required=True)
     p.add_argument("--key", required=True)
@@ -52,6 +54,9 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("args", nargs="?", default="{}")
     a = ap.parse_args(argv)
 
+    if a.op == "doctor":
+        from .doctor import run
+        return run(a.data)
     if a.op == "verify-log":
         from pathlib import Path
         from .audit import check_log, first_bad_seq

@@ -161,3 +161,9 @@ received hash differently, which is what a swap of keys in transit produces. The
 checked are written to the audit entry. The check only helps if the fingerprint is compared over a channel the
 attacker does not control, and it is optional: without `expect_fingerprint` the enrolment is recorded as
 `verified: false`. The owner-signed manifest and ACL are not built yet.
+
+## `kig doctor`
+
+`python -m kig.cli doctor --data DIR` opens the directory as the service would (crash recovery runs; a journal
+behind the audit log is reported as `FAIL open`), then checks the audit chain, every referenced blob against its
+hash, orphan blobs and file permissions. Exit code 1 on any FAIL.
