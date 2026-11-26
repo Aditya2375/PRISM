@@ -187,6 +187,8 @@ def create_app(data_dir: str | Path, service: GuardService | None = None,
         ok, why = svc.audit.verify()
         return {"ok": ok, "reason": why, "head": svc.audit.head}
 
+    last_backup = [-1e9]
+
     @app.post("/v1/backup", dependencies=[Depends(operator)])
     def make_backup() -> dict[str, Any]:
         """Write one signed, sealed backup into the configured directory, so a cron job or timer can schedule backups.
@@ -205,10 +207,20 @@ def create_app(data_dir: str | Path, service: GuardService | None = None,
         if out_dir.resolve() == data_dir.resolve() or data_dir.resolve() in out_dir.resolve().parents:
             raise Denied("not_configured", "KIG_BACKUP_DIR must be outside the data directory", 409)
         import time as _t
+        from .envcfg import env_num
+        min_gap = env_num("KIG_BACKUP_MIN_INTERVAL", 60.0, lo=0, cast=float)
+        max_files = int(env_num("KIG_BACKUP_MAX_FILES", 500))
+        now = _t.monotonic()
+        if now - last_backup[0] < min_gap:
+            raise Denied("too_soon", f"at most one backup per {min_gap:g} s", 429)
+        if sum(1 for _ in out_dir.glob("prism-*.bak")) >= max_files:
+            raise Denied("backup_dir_full", f"{max_files} backups already in the directory; prune old ones", 409)
+        last_backup[0] = now
         tmp_name = out_dir / f"prism-{secrets.token_hex(4)}.bak"
         info = bk.create(svc, pub, tmp_name)
         final = out_dir / f"prism-{info['counter']:06d}-{_t.strftime('%Y%m%dT%H%M%SZ', _t.gmtime())}.bak"
         tmp_name.rename(final)
+        svc._log("backup.created", "operator", {"file": final.name, "counter": info["counter"]})
         return {"ok": True, "file": final.name, "counter": info["counter"], "blob_count": info["blob_count"],
                 "audit_len": info["audit_len"], "audit_head": info["audit_head"]}
 

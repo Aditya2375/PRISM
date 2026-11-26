@@ -175,7 +175,7 @@ run (Linux x86_64, Python 3.12; wall times depend on the machine):
 
 How to read it. The two misses are in the denominator on purpose: the rules are thresholds over audit events, so they do
 not flag a denied probe (it is a refusal, not an access pattern) or an insider who stays under every window by reading one
-new file every ten minutes. The access rules (R6, R7) and R8 are new and tuned by us on the same traces we test them on, so
+new file every ten minutes. The recall rose from 0.67 to 0.82 because we added rules R6 to R9, changed two scenarios to fit them and added two misses we cannot catch. It is a re-measure after tuning the rules against our own scenarios, not an independent improvement. The access rules (R6, R7) and R8 are new and tuned by us on the same traces we test them on, so
 treat the thresholds as defaults for a small team, not as measured on real traffic. The scenarios and the
 rules were written by the same people, so this shows what the rules do on these traces and is not a claim about real
 traffic. The flood scenario waits for the one-minute summary, so its 61 s is the rule's design, not slowness.
@@ -217,7 +217,7 @@ The primary console is `web-p3/`: a React app in the red design contributed by A
 | R3-AUTH-FAILURE-BURST | high | 3 failed authentications for one device from one source in 60 s | alert only. Nobody is locked out; logging is rate bounded and summarised as `auth.failures_suppressed` |
 | R4-PRIVILEGE-ESCALATION | high, or critical if the user's first device was enrolled under 10 min earlier | a user becomes admin | recorded; demote with `set_role` |
 | R5-ADMIN-LIMITED-DEVICE-REMOVED | high | a limited device of an admin is removed | alert only; expected after a lost phone, a sign of a stolen acting device otherwise |
-| R6-LATERAL-MOVEMENT | high | a device that already had a read history (2 or more files older than 5 min) reads 4 files it never read before within 5 min | alert only; the reads were valid. A pattern, not proof; names the files |
+| R6-LATERAL-MOVEMENT | medium | a device that already had a read history (2 or more files older than 5 min) reads 4 files it never read before within 5 min | alert only; the reads were valid. A pattern, not proof; names the files. Known false positive: a member newly shared several files who opens them at once |
 | R7-BULK-READ | critical for an admin's device, else high | one device reads 15 different files within 60 s | alert only; names the device, user and files |
 | R8-SLOW-GUESSING | medium | 8 failed authentications from one source within an hour (too slow for R3) | alert only; requests were already denied |
 | R9-CLOCK-SKEW | low | 3 requests from one device refused as stale (outside the +/-30 s window) within 60 s | alert only; states the offsets seen. A drifting device clock and replay of old traffic look alike |

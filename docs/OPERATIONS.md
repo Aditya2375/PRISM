@@ -17,7 +17,7 @@ export KIG_BACKUP_DIR=/var/backups/prism          # must be outside the data dir
 
 Each call writes `prism-<counter>-<UTC time>.bak` (owner-only) and returns the counter, blob count and audit head. Record the
 counter outside the data directory: without it nothing can tell a stale backup from a fresh one (`docs/CORE.md`, "Backup and
-restore"). The endpoint answers 409 until both variables are set. It does not delete old backups; keep or prune them with your
+restore"). The endpoint answers 409 until both variables are set. Each backup writes a `backup.created` audit entry. Limits: one backup per 60 s (`KIG_BACKUP_MIN_INTERVAL`, answers 429) and at most 500 files in the directory (`KIG_BACKUP_MAX_FILES`, answers 409). Each file is a full copy, so a leaked operator token can still fill the disk up to that cap (500 times the data size); keep the token secret and size the volume for it. It does not delete old backups; keep or prune them with your
 own policy (for example `find /var/backups/prism -name '*.bak' -mtime +30 -delete`). Check a file without the private key with
 `python verifier/prism_verify.py backup --file x.bak --pub data/server_sign.pub`. Test a restore before you rely on one:
 `tests/test_restore_drill.py` is the drill we run.

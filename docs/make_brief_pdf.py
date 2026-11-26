@@ -201,7 +201,7 @@ def page2(video: str) -> list:
         "Rollback of a whole data directory is detected only against a pin kept outside it (<i>KIG_PIN_FILE</i>). The audit log has no independent completeness proof without an external head.",
         "Private keys sit in files (passphrase-sealed when set). Python cannot wipe memory. No hardware key store driver is shipped.",
         "Metadata (file ids, access lists, device ids, access times) is visible to the service. A malicious replica can ignore revocation for clients that talk only to it.",
-        "Rule-based detection only: it misses a slow valid insider and denied probes (measured recall 0.82). Single worker per data directory.",
+        "Rule-based detection only: it misses a slow valid insider and denied probes (recall 0.82, up from 0.67 after we tuned rules on our own scenarios). Single worker per data directory.",
         "Alert attribution is a claim, not proof: an alert names a device and user only when an enrolled device failed a signature check, otherwise it says unknown.",
     ]:
         f.append(B(x, sbullet))

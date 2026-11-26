@@ -266,11 +266,12 @@ class Detector:
             names = sorted({x[2] for x in fresh})
             if len(names) >= LATERAL_NEW_FILES and not self._dup(f"R6:{dev}", ts):
                 out.append(Alert(
-                    "R6-LATERAL-MOVEMENT", "high",
+                    "R6-LATERAL-MOVEMENT", "medium",
                     f"Device {dev} of user {user}, which already had a read history, read "
                     f"{len(names)} files it had never read before within {LATERAL_WINDOW_S}s ({', '.join(names[:5])}"
                     f"{', ...' if len(names) > 5 else ''}). A valid identity moving to new data is how an intruder spreads. "
-                    "This is a pattern, not proof.",
+                    "This is a pattern, not proof. A member who was just given access to several files and opens them "
+                    "straight away looks the same, so check recent shares first.",
                     [x[1] for x in fresh], response="recorded; reads were allowed (access was valid)", subject=dev,
                     device=dev, user=user, files=names[:50]))
         return out

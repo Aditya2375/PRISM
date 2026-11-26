@@ -87,8 +87,12 @@ def test_scheduled_backup_endpoint(tmp_path, monkeypatch):
     monkeypatch.setenv("KIG_BACKUP_DIR", str(out))
     r = tc.post("/v1/backup", headers=h)
     assert r.status_code == 200 and r.json()["counter"] == 1
+    assert tc.post("/v1/backup", headers=h).status_code == 429                  # default minimum gap
+    monkeypatch.setenv("KIG_BACKUP_MIN_INTERVAL", "0")
     r2 = tc.post("/v1/backup", headers=h)
     assert r2.json()["counter"] == 2 and r2.json()["file"] != r.json()["file"]
     files = sorted(p.name for p in out.iterdir())
     assert len(files) == 2 and all(f.endswith(".bak") for f in files)
     assert (out / r.json()["file"]).stat().st_mode & 0o077 == 0                 # owner-only
+    monkeypatch.setenv("KIG_BACKUP_MAX_FILES", "2")
+    assert tc.post("/v1/backup", headers=h).status_code == 409                  # directory cap

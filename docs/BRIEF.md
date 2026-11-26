@@ -35,7 +35,7 @@ someone who does not trust the service.**
   Measured with `python -m kig.bench_detect` on one machine: 0 false alerts in 1,265 benign requests (0.0 per
   1,000); eleven labelled attack scenarios x 20 runs, precision 1.00, recall 0.82, F1 0.90, median time to alert 3 to
   75 ms wall (0 to 220 s on the service clock) for the rules that fire. Two scenarios (a denied probe,
-  a slow valid insider) are missed on purpose and counted. Rules and scenarios have the same authors.
+  a slow valid insider) are missed on purpose and counted. Rules and scenarios have the same authors. Recall rose from 0.67 to 0.82 as a re-measure after tuning rules against our own scenarios (two changed to fit, two misses added), not an independent gain.
 
 ## How to see it in 90 seconds
 
