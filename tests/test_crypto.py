@@ -7,7 +7,8 @@ def test_kem_roundtrip_and_context_binding():
     pub, sec = c.kem_keygen()
     ct, k1 = c.kem_encaps(pub, b"ctx")
     assert c.kem_decaps(sec, pub, ct, b"ctx") == k1
-    assert c.kem_decaps(sec, pub, ct, b"other") != k1
+    with pytest.raises(c.CryptoError):
+        c.kem_decaps(sec, pub, ct, b"other")
 
 
 def test_kem_wrong_secret_gives_different_key():

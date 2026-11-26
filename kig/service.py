@@ -439,7 +439,7 @@ class GuardService:
             sp, kp = c.b64d(args["sign_pub"]), c.b64d(args["kem_pub"])
         except (KeyError, c.CryptoError):
             raise Denied("bad_request", "missing keys", 400) from None
-        if len(kp) != c.KEM_PQ_PUB + c.X_LEN or len(sp) != 1952:
+        if len(kp) != c.KEM_PQ_PUB + c.X_LEN or len(sp) != c.SIG_PUB:
             raise Denied("bad_request", "wrong key size", 400)
         if target not in self.state["users"] or not self.state["users"][target]["active"]:
             raise Denied("bad_request", "unknown or disabled user", 400)

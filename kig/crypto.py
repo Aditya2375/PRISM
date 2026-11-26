@@ -2,11 +2,11 @@
 
 No custom primitives. Everything is composed from vetted implementations:
 
-* ML-KEM-768 (FIPS 203) and ML-DSA-65 (FIPS 204) from ``pqcrypto`` (PQClean).
-* X25519, HKDF-SHA256 and AES-256-GCM from ``cryptography``.
+* ML-KEM-768 (FIPS 203), ML-DSA-65 (FIPS 204), the X25519+ML-KEM-768 hybrid HPKE
+  suite, HKDF-SHA256 and AES-256-GCM, all from ``cryptography``.
 
-Key establishment is hybrid: the wrap key is derived from both the ML-KEM and
-the X25519 shared secrets, so it stays safe unless both are broken.
+Key establishment is hybrid through the library's standard HPKE suite, so it
+stays safe unless both X25519 and ML-KEM are broken.
 """
 from __future__ import annotations
 
@@ -16,22 +16,26 @@ import json
 import os
 from typing import Any
 
-import pqcrypto.kem.ml_kem_768 as _kem
-import pqcrypto.sign.ml_dsa_65 as _dsa
-from cryptography.exceptions import InvalidTag
+from cryptography.exceptions import InvalidSignature, InvalidTag
 from cryptography.hazmat.primitives import hashes, serialization
-from cryptography.hazmat.primitives.asymmetric.x25519 import (
-    X25519PrivateKey,
-    X25519PublicKey,
-)
+from cryptography.hazmat.primitives.asymmetric import mldsa, mlkem, x25519
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+from cryptography.hazmat.primitives.hpke import (
+    AEAD,
+    KDF,
+    KEM,
+    MLKEM768X25519PrivateKey,
+    MLKEM768X25519PublicKey,
+    Suite,
+)
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
-from pqcrypto import InvalidSignatureError
 
-KEM_PQ_PUB = _kem.PUBLIC_KEY_SIZE
-KEM_PQ_CT = _kem.CIPHERTEXT_SIZE
-KEM_PQ_SEC = _kem.SECRET_KEY_SIZE
+KEM_PQ_PUB = 1184
+KEM_PQ_SEED = 64
 X_LEN = 32
+SIG_PUB = 1952
+SIG_SEED = 32
+_SUITE = Suite(KEM.MLKEM768_X25519, KDF.HKDF_SHA256, AEAD.CHACHA20_POLY1305)
 KEY_LEN = 32
 NONCE_LEN = 12
 
@@ -64,65 +68,78 @@ def sha256_hex(data: bytes) -> str:
 
 
 # ------------------------------------------------------------ hybrid KEM
+# X25519 + ML-KEM-768 through the library's standard hybrid HPKE suite. We never
+# combine the two shared secrets ourselves. Binding data goes in HPKE ``info``.
+
+
+def _raw(pub: x25519.X25519PublicKey) -> bytes:
+    return pub.public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw)
 
 
 def kem_keygen() -> tuple[bytes, bytes]:
-    """Return (public, secret). public = mlkem_pk || x25519_pk, secret likewise."""
-    pq_pub, pq_sec = _kem.keygen()
-    xsec = X25519PrivateKey.generate()
-    xpub = xsec.public_key().public_bytes(
-        serialization.Encoding.Raw, serialization.PublicFormat.Raw
+    """Return (public, secret). public = mlkem_pk || x25519_pk; secret = mlkem_seed || x25519_sk."""
+    m = mlkem.MLKEM768PrivateKey.generate()
+    x = x25519.X25519PrivateKey.generate()
+    pub = m.public_key().public_bytes_raw() + _raw(x.public_key())
+    sec = m.private_bytes_raw() + x.private_bytes(
+        serialization.Encoding.Raw, serialization.PrivateFormat.Raw, serialization.NoEncryption()
     )
-    xsec_raw = xsec.private_bytes(
-        serialization.Encoding.Raw,
-        serialization.PrivateFormat.Raw,
-        serialization.NoEncryption(),
-    )
-    return pq_pub + xpub, pq_sec + xsec_raw
+    return pub, sec
 
 
-def _derive(ss_pq: bytes, ss_x: bytes, ct: bytes, pub: bytes, context: bytes) -> bytes:
-    info = b"kig/v1/hybrid-kem\x00" + context + b"\x00" + sha256_hex(pub).encode() + ct
-    return HKDF(algorithm=hashes.SHA256(), length=KEY_LEN, salt=None, info=info).derive(
-        ss_pq + ss_x
-    )
+def _pub_obj(pub: bytes) -> MLKEM768X25519PublicKey:
+    if len(pub) != KEM_PQ_PUB + X_LEN:
+        raise CryptoError("bad KEM public key length")
+    try:
+        return MLKEM768X25519PublicKey(
+            mlkem.MLKEM768PublicKey.from_public_bytes(pub[:KEM_PQ_PUB]),
+            x25519.X25519PublicKey.from_public_bytes(pub[KEM_PQ_PUB:]),
+        )
+    except Exception as exc:  # noqa: BLE001
+        raise CryptoError("bad KEM public key") from exc
+
+
+def _sec_obj(sec: bytes) -> MLKEM768X25519PrivateKey:
+    if len(sec) != KEM_PQ_SEED + X_LEN:
+        raise CryptoError("bad KEM secret key length")
+    try:
+        return MLKEM768X25519PrivateKey(
+            mlkem.MLKEM768PrivateKey.from_seed_bytes(sec[:KEM_PQ_SEED]),
+            x25519.X25519PrivateKey.from_private_bytes(sec[KEM_PQ_SEED:]),
+        )
+    except Exception as exc:  # noqa: BLE001
+        raise CryptoError("bad KEM secret key") from exc
+
+
+def _info(pub: bytes, context: bytes) -> bytes:
+    return b"kig/v2/kem\x00" + context + b"\x00" + hashlib.sha256(pub).digest()
 
 
 def kem_encaps(pub: bytes, context: bytes) -> tuple[bytes, bytes]:
-    """Return (ciphertext, key). ``context`` binds the key to its purpose."""
-    if len(pub) != KEM_PQ_PUB + X_LEN:
-        raise CryptoError("bad KEM public key length")
-    pq_pub, x_pub = pub[:KEM_PQ_PUB], pub[KEM_PQ_PUB:]
-    pq_ct, ss_pq = _kem.encaps(pq_pub)
-    eph = X25519PrivateKey.generate()
-    eph_pub = eph.public_key().public_bytes(
-        serialization.Encoding.Raw, serialization.PublicFormat.Raw
-    )
-    ss_x = eph.exchange(X25519PublicKey.from_public_bytes(x_pub))
-    ct = pq_ct + eph_pub
-    return ct, _derive(ss_pq, ss_x, ct, pub, context)
+    """Return (ciphertext, key). A fresh random key is sent through HPKE to ``pub``."""
+    key = os.urandom(KEY_LEN)
+    return _SUITE.encrypt(key, _pub_obj(pub), info=_info(pub, context)), key
 
 
 def kem_decaps(sec: bytes, pub: bytes, ct: bytes, context: bytes) -> bytes:
-    if len(sec) != KEM_PQ_SEC + X_LEN or len(ct) != KEM_PQ_CT + X_LEN:
-        raise CryptoError("bad KEM key or ciphertext length")
-    pq_sec, x_sec = sec[:KEM_PQ_SEC], sec[KEM_PQ_SEC:]
-    pq_ct, eph_pub = ct[:KEM_PQ_CT], ct[KEM_PQ_CT:]
     try:
-        ss_pq = _kem.decaps(pq_sec, pq_ct)
-        ss_x = X25519PrivateKey.from_private_bytes(x_sec).exchange(
-            X25519PublicKey.from_public_bytes(eph_pub)
-        )
+        key = _SUITE.decrypt(ct, _sec_obj(sec), info=_info(pub, context))
+    except CryptoError:
+        raise
     except Exception as exc:  # noqa: BLE001
         raise CryptoError("KEM decapsulation failed") from exc
-    return _derive(ss_pq, ss_x, ct, pub, context)
+    if len(key) != KEY_LEN:
+        raise CryptoError("bad key length")
+    return key
 
 
 # ------------------------------------------------------------- signatures
 
 
 def sig_keygen() -> tuple[bytes, bytes]:
-    return _dsa.keygen()
+    """Return (public, secret). The secret is the 32-byte ML-DSA-65 seed."""
+    k = mldsa.MLDSA65PrivateKey.generate()
+    return k.public_key().public_bytes_raw(), k.private_bytes_raw()
 
 
 def _domain(purpose: str, msg: bytes) -> bytes:
@@ -130,14 +147,14 @@ def _domain(purpose: str, msg: bytes) -> bytes:
 
 
 def sign(sec: bytes, purpose: str, msg: bytes) -> bytes:
-    return _dsa.sign(sec, _domain(purpose, msg))
+    return mldsa.MLDSA65PrivateKey.from_seed_bytes(sec).sign(_domain(purpose, msg))
 
 
 def verify(pub: bytes, purpose: str, msg: bytes, sig: bytes) -> bool:
     try:
-        _dsa.verify(pub, _domain(purpose, msg), sig)
+        mldsa.MLDSA65PublicKey.from_public_bytes(pub).verify(sig, _domain(purpose, msg))
         return True
-    except (InvalidSignatureError, ValueError, TypeError):
+    except (InvalidSignature, ValueError, TypeError):
         return False
     except Exception:  # noqa: BLE001  malformed key or signature length
         return False

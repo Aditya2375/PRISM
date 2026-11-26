@@ -29,7 +29,7 @@
 - The service host and its `data/` directory (signing key, operator token) are not compromised.
 - Transport is TLS-protected in deployment (the demo binds to localhost).
 - Device clocks are within 30 s of the service.
-- Libraries (`pqcrypto`/PQClean, `cryptography`) are correct. No custom primitives are used.
+- Libraries (`cryptography`) are correct. No custom primitives are used.
 
 ## Known limits (stated honestly)
 - **A revoked device keeps anything it already decrypted or copied.** Rotation protects future versions only.
