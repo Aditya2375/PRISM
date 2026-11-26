@@ -16,6 +16,8 @@ A throwaway copy of the PRISM web console for reviewing the design in a browser.
 * Limits: sync between nodes and the extra cluster processes are not part of this copy. Plain demo only.
 * Treat the host log as a secret: the two tokens are printed there in plain text. To rotate them, restart the service.
 * Behind a host that sets X-Forwarded-For (Render), set `HOSTED_TRUST_PROXY=1` (render.yaml does). Without it the limits use the
-  peer address only, so a client cannot dodge them by sending its own header. There are also global limits (600 requests and 100
-  rejected-token replies per minute in total), a 10 s body read timeout, a 2 MB cap on backend replies, and uvicorn keep-alive 5 s
-  with at most 100 concurrent connections.
+  peer address only, so a client cannot dodge them by sending its own header. There are also global limits (3000 requests and 100
+  rejected-token replies per minute in total, charged only after the per-client limit passes, so one client cannot use them up alone;
+  several distinct addresses together still can), a 10 s body read timeout, a 2 MB cap on backend replies, and uvicorn keep-alive 5 s.
+  There is no connection cap and no header-read timeout in this process (a cap let partial-header sockets lock everyone out), so slow-header
+  attacks are left to the host's edge proxy; Render's does that. Checked on the live host after deploy.

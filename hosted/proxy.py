@@ -26,7 +26,7 @@ MAX_BODY = int(os.environ.get("HOSTED_MAX_BODY", str(64 * 1024)))       # bytes,
 RATE = int(os.environ.get("HOSTED_RATE", "120"))                         # requests per window, per client
 WINDOW = float(os.environ.get("HOSTED_WINDOW_S", "60"))
 FAIL_RATE = int(os.environ.get("HOSTED_FAIL_RATE", "10"))                # rejected token attempts per window, per client
-GLOBAL_RATE = int(os.environ.get("HOSTED_GLOBAL_RATE", "600"))           # requests per window, all clients together
+GLOBAL_RATE = int(os.environ.get("HOSTED_GLOBAL_RATE", "3000"))           # requests per window, all clients together
 GLOBAL_FAIL_RATE = int(os.environ.get("HOSTED_GLOBAL_FAIL_RATE", "100"))  # rejected token replies per window, all clients
 TRUST_PROXY = os.environ.get("HOSTED_TRUST_PROXY") == "1"                # only behind a host that sets X-Forwarded-For itself
 BODY_TIMEOUT_S = float(os.environ.get("HOSTED_BODY_TIMEOUT_S", "10"))
@@ -121,7 +121,7 @@ def build_app(static_dir: str | None = None, *, client: httpx.AsyncClient | None
         if base is None:
             return JSONResponse({"error": "not_found"}, status_code=404)
         ip = client_ip(request, trust_proxy)
-        if not glob.allow("all") or not lim.allow(ip):
+        if not lim.allow(ip) or not glob.allow("all"):
             return too_many()
         declared = request.headers.get("content-length")
         if declared is not None and (not declared.isdigit() or int(declared) > MAX_BODY):

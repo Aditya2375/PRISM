@@ -119,3 +119,19 @@ def test_oversized_backend_reply_is_refused(monkeypatch):
         return httpx.Response(200, content=b"x" * 500)
     c = TestClient(build_app(client=httpx.AsyncClient(transport=httpx.MockTransport(handler))))
     assert c.get("/v1/overview").status_code == 502
+
+
+def test_one_abusive_client_cannot_use_up_the_global_budget():
+    c = TestClient(build_app(client=fake_backend([]), limiter=Limiter(3, 60), global_limiter=Limiter(10, 60), trust_proxy=True))
+    h = {"x-kig-operator-token": "good"}
+    for _ in range(200):
+        c.get("/v1/overview", headers={**h, "x-forwarded-for": "1.1.1.1"})
+    assert c.get("/v1/overview", headers={**h, "x-forwarded-for": "3.3.3.3"}).status_code == 200
+
+
+def test_rejected_tokens_from_one_client_do_not_use_up_the_global_failure_budget():
+    c = TestClient(build_app(client=fake_backend([]), limiter=Limiter(1000, 60), fail_limiter=Limiter(3, 60),
+                             global_fail_limiter=Limiter(5, 60), trust_proxy=True))
+    for _ in range(100):
+        c.get("/v1/overview", headers={"x-kig-operator-token": "bad", "x-forwarded-for": "1.1.1.1"})
+    assert c.get("/v1/overview", headers={"x-kig-operator-token": "bad", "x-forwarded-for": "3.3.3.3"}).status_code == 401
