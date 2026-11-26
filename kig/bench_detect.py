@@ -1,4 +1,4 @@
-"""Measure the detection rules. Run: python -m kig.bench_detect [--reps N] [--json]
+"""Measure the detection rules. Run: python -m kig.bench_detect [--reps N, default 20] [--json]
 
 Two things are measured, both on a fresh in-process service with a controllable clock:
 
@@ -209,7 +209,7 @@ def _med(xs: list[float]) -> float:
     return round(statistics.median(xs), 1)
 
 
-def run(reps: int = 10, benign_worlds: int = 5, benign_cycles: int = 40) -> dict[str, Any]:
+def run(reps: int = 20, benign_worlds: int = 5, benign_cycles: int = 40) -> dict[str, Any]:
     err = io.StringIO()
     with contextlib.redirect_stderr(err):                       # alerts also print one line each; keep the report clean
         fa_alerts, fa_requests, fa_by_rule = 0, 0, {}
@@ -268,7 +268,7 @@ def run(reps: int = 10, benign_worlds: int = 5, benign_cycles: int = 40) -> dict
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    ap.add_argument("--reps", type=int, default=10)
+    ap.add_argument("--reps", type=int, default=20)
     ap.add_argument("--json", action="store_true")
     a = ap.parse_args(argv)
     r = run(reps=a.reps)
@@ -280,12 +280,12 @@ def main(argv: list[str] | None = None) -> int:
     print(f"benign replay: {fa['benign_requests']} requests, {fa['alerts']} false alerts = {fa['per_1000_requests']} per 1,000"
           + (f" {fa['by_rule']}" if fa["by_rule"] else ""))
     print(f"{'scenario':<58}{'caught':>8}{'wall ms min/med/max':>26}{'service s min/med/max':>26}")
+    def trio(x: dict[str, float] | None) -> str:
+        return "-" if not x else "{}/{}/{}".format(x["min"], x["median"], x["max"])
+
     for s in r["scenarios"]:
-        w = s["wall_ms"]
-        c = s["service_clock_s"]
-        print(f"{s['scenario']:<58}{str(s['detected']) + '/' + str(s['runs']):>8}"
-              f"{(f'{w['min']}/{w['median']}/{w['max']}' if w else '-'):>26}"
-              f"{(f'{c['min']}/{c['median']}/{c['max']}' if c else '-'):>26}")
+        print("{:<58}{:>8}{:>26}{:>26}".format(s["scenario"], "{}/{}".format(s["detected"], s["runs"]),
+                                               trio(s["wall_ms"]), trio(s["service_clock_s"])))
     print(f"attack runs {r['attack_runs']}: TP {r['true_positives']} FN {r['false_negatives']} FP {r['false_positives']}"
           f" (of which {r['false_positives_in_attack_runs']} inside attack runs)")
     print(f"precision {r['precision']}  recall {r['recall']}  F1 {r['f1']}")

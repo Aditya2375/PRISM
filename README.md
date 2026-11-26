@@ -143,7 +143,7 @@ Alerts are structured. Each one carries `rule`, `severity`, `explanation`, `evid
 (network source, when the request was logged) and `actor`. A value the audit entry does not hold is the string
 `unknown`; it is never guessed. The suppressed-burst alert (R3) has no single identity, so it says `unknown`.
 
-`python -m kig.bench_detect` builds a fresh in-process service for each run, replays a benign trace, then runs nine
+`python -m kig.bench_detect` (default 20 runs per scenario) builds a fresh in-process service for each run, replays a benign trace, then runs nine
 labelled attack scenarios 20 times each. Time to alert runs from the first malicious request to the alert:
 wall milliseconds on this machine, and seconds on the service clock (the clock the rules use). Result on one
 run (Linux x86_64, Python 3.12; wall times depend on the machine):
@@ -157,12 +157,12 @@ run (Linux x86_64, Python 3.12; wall times depend on the machine):
 
 | Scenario | Caught | Median wall ms (min-max) | Median service-clock s |
 | --- | --- | --- | --- |
-| lost device used after it was reported lost (R1) | 20/20 | 6.7 (4.5-13.6) | 0 |
-| captured request replayed from another source (R2) | 20/20 | 5.3 (3.1-10.3) | 0 |
-| three bad signatures in a minute from one source (R3) | 20/20 | 15.4 (11.0-20.7) | 2 |
-| flood of unknown device ids, summary alert (R3) | 20/20 | 66.8 (58.9-80.9) | 61 |
-| fresh account promoted to admin (R4) | 20/20 | 6.2 (4.2-9.1) | 0 |
-| admin device removes the owner's limited phone (R5) | 20/20 | 7.3 (4.6-12.4) | 0 |
+| lost device used after it was reported lost (R1) | 20/20 | 6.1 (4.3-11.1) | 0 |
+| captured request replayed from another source (R2) | 20/20 | 5.6 (3.2-7.6) | 0 |
+| three bad signatures in a minute from one source (R3) | 20/20 | 15.5 (12.1-20.9) | 2 |
+| flood of unknown device ids, summary alert (R3) | 20/20 | 67.8 (58.1-79.1) | 61 |
+| fresh account promoted to admin (R4) | 20/20 | 6.9 (5.5-11.2) | 0 |
+| admin device removes the owner's limited phone (R5) | 20/20 | 7.1 (5.4-12.6) | 0 |
 | slow guessing, 2 bad signatures per 65 s for 11 minutes | 0/20 | not detected | |
 | member probes a file outside its list | 0/20 | not detected | |
 | valid admin device reads many files | 0/20 | not detected | |

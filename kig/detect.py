@@ -56,7 +56,7 @@ class Detector:
     """Keeps a small amount of derived state; fed one audit entry at a time."""
 
     removed_at: dict[str, int] = field(default_factory=dict)  # device -> seq of revoke/lost
-    failures: dict[str, list[tuple[float, int]]] = field(default_factory=dict)
+    failures: dict[tuple[str, str], list[tuple[float, int]]] = field(default_factory=dict)
     first_device_ts: dict[str, float] = field(default_factory=dict)
     max_tracked: int = 4096
     last_alert: dict[str, float] = field(default_factory=dict)
@@ -76,7 +76,7 @@ class Detector:
                 a.source = src
             if a.actor == "unknown" and actor != "?":
                 a.actor = str(actor)
-            if a.user == "unknown" and a.device != "unknown":
+            if a.user == "unknown" and a.device != "unknown" and not a.rule.startswith("R3-"):
                 a.user = self.owner_of.get(a.device, "unknown")
         return alerts
 
@@ -153,24 +153,32 @@ class Detector:
                 )
             )
         elif t in ("auth.bad_signature", "auth.unknown_device"):
-            key = f"{d.get('device', '?')}@{d.get('source')}"
+            claimed, source = str(d.get("device", "?")), str(d.get("source"))
+            key = (claimed, source)                      # a tuple: an id that contains "@" cannot be confused with a source
             hist = [x for x in self.failures.get(key, []) if ts - x[0] <= BURST_WINDOW_S]
             hist.append((ts, seq))
             self.failures[key] = hist
             if len(self.failures) > self.max_tracked:
                 self.failures.pop(next(iter(self.failures)))
             if len(hist) >= BURST_THRESHOLD:
+                # The device id in an unauthenticated request is only a claim. It is named in the structured fields
+                # only when it is an enrolled device and the failure was a bad signature on it, and then the wording
+                # says the sender may not be that device. Otherwise device and user stay "unknown".
+                known = t == "auth.bad_signature" and claimed in self.owner_of
+                who = (f"claiming the enrolled device '{claimed}' (the signature did not verify, so the sender may not be that device)"
+                       if known else f"claiming the device id '{claimed}'")
                 alerts.append(
                     Alert(
                         "R3-AUTH-FAILURE-BURST",
                         "high",
-                        f"{len(hist)} failed authentications claiming '{key}' within "
-                        f"{BURST_WINDOW_S}s from one source. Requests were denied; nobody is locked out.",
-                        [s for _, s in hist],
+                        f"{len(hist)} failed authentications {who} within "
+                        f"{BURST_WINDOW_S}s from source {source}. Requests were denied; nobody is locked out.",
+                        [sq for _, sq in hist],
                         response="denied and rate limited",
-                        subject=key.split("@")[0],
-                        device=key.split("@")[0],
-                        source=str(d.get("source") or "unknown"),
+                        subject=claimed if known else "unauthenticated",
+                        device=claimed if known else "unknown",
+                        user=self.owner_of[claimed] if known else "unknown",
+                        source=source,
                     )
                 )
                 self.failures[key] = []
