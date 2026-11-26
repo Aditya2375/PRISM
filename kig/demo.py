@@ -58,16 +58,10 @@ def main(story: bool = False) -> int:
         return 0 if ok else 1
 
 
-def _story(tmp: str, svc: GuardService, admin: Client, ravi: Client) -> bool:
-    """Steps 6 to 8: tampering, a crash in the middle of a rotation, and the claim-to-evidence table."""
-    from pathlib import Path
-    from .doctor import check
-    from .service import SimulatedCrash
-    good = True
-
-    step(6, "Three nodes: the same lost phone is cut off everywhere (simulated nodes, seeded network delay)")
+def cluster_report() -> dict:
+    """The three-node scene as data: per-node revocation timings and the cut-off replica. Simulated, one process."""
     import random
-    from .cluster import Bus, Cluster
+    from .cluster import LEASE_S, Bus, Cluster
     rnd = random.Random(7)
     with tempfile.TemporaryDirectory() as ctmp:
         cl = Cluster(ctmp, bus=Bus(lambda n: rnd.uniform(0.005, 0.05)))
@@ -79,10 +73,6 @@ def _story(tmp: str, svc: GuardService, admin: Client, ravi: Client) -> bool:
         cl.bus.drain(); cl.sync_all()
         cadmin.call("report_lost", device="asha-phone", reason="stolen")
         t = cl.measure_revocation(phone)
-        for name in sorted(t):
-            print(f"   {name}: rejects the lost phone {t[name] * 1000:6.1f} ms after the primary acknowledged")
-        good = good and max(t.values()) < 3.0
-        from .cluster import LEASE_S
         cadmin.put_file("doc", b"x", acl=["asha"])
         cl.bus.drain(); cl.sync_all()
         spare = Device.generate("asha-spare", "asha")
@@ -98,11 +88,30 @@ def _story(tmp: str, svc: GuardService, admin: Client, ravi: Client) -> bool:
             cl.client(boss, "node-c").call("whoami"); after = "served"
         except Denied as e:
             after = e.code
-        print(f"   node-c cut off from the primary: lost device inside the {LEASE_S:.0f} s lease -> {inside}; "
-              f"after the lease every request -> {after}")
-        good = good and after == "node_stale"
         cl.bus.drain()                    # let delayed pushes finish before the temporary directory goes away
-        print("   (nodes run in one process here; the timings measure the replication logic, not a real network)")
+    return {"simulated": True, "note": "three nodes in one process; ms values are dominated by an injected 5 to 50 ms delay",
+            "injected_delay_ms": [5, 50], "lease_s": LEASE_S,
+            "nodes": [{"node": n, "ms": round(t[n] * 1000, 1)} for n in sorted(t)],
+            "partition": {"node": "node-c", "inside_lease": inside, "after_lease": after}}
+
+
+def _story(tmp: str, svc: GuardService, admin: Client, ravi: Client) -> bool:
+    """Steps 6 to 8: tampering, a crash in the middle of a rotation, and the claim-to-evidence table."""
+    from pathlib import Path
+    from .doctor import check
+    from .service import SimulatedCrash
+    good = True
+
+    step(6, "Three nodes: the same lost phone is cut off everywhere (simulated nodes, seeded network delay)")
+    rep = cluster_report()
+    for row in rep["nodes"]:
+        print(f"   {row['node']}: rejects the lost phone {row['ms']:6.1f} ms after the primary acknowledged")
+    good = good and max(r["ms"] for r in rep["nodes"]) < 3000.0
+    part = rep["partition"]
+    print(f"   node-c cut off from the primary: lost device inside the {rep['lease_s']:.0f} s lease -> {part['inside_lease']}; "
+          f"after the lease every request -> {part['after_lease']}")
+    good = good and part["after_lease"] == "node_stale"
+    print("   (nodes run in one process here; the timings measure the replication logic, not a real network)")
 
     step(7, "Tampering: a stored ciphertext is changed on disk, and an audit line is edited")
     h = next(iter(svc.blob_hashes()))
@@ -157,4 +166,7 @@ def _story(tmp: str, svc: GuardService, admin: Client, ravi: Client) -> bool:
 
 
 if __name__ == "__main__":
+    if "--json" in sys.argv[1:]:
+        print(json.dumps(cluster_report(), indent=2))
+        sys.exit(0)
     sys.exit(main(story="--story" in sys.argv[1:]))

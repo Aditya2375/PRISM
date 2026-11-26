@@ -33,7 +33,8 @@ def _operator_token(data_dir: Path) -> str:
 
 
 def create_app(data_dir: str | Path, service: GuardService | None = None,
-               trust_proxy: bool | None = None) -> FastAPI:
+               trust_proxy: bool | None = None,
+               cors_origins: list[str] | None = None) -> FastAPI:
     data_dir = Path(data_dir)
     if trust_proxy is None:
         trust_proxy = os.environ.get("KIG_TRUSTED_PROXY") == "1"
@@ -47,6 +48,14 @@ def create_app(data_dir: str | Path, service: GuardService | None = None,
     token = _operator_token(data_dir)
     app = FastAPI(title="Key Identity Guard", version="0.1.0", docs_url=None, redoc_url=None)
     app.state.service = svc
+    if cors_origins is None:                      # off unless asked for: a page on another origin is otherwise blocked
+        cors_origins = [o.strip() for o in os.environ.get("KIG_CORS_ORIGINS", "").split(",") if o.strip()]
+    if cors_origins:
+        if any(o == "*" or "*" in o or not o.startswith(("http://", "https://")) for o in cors_origins):
+            raise ValueError("KIG_CORS_ORIGINS must list exact origins such as http://localhost:5173, never *")
+        from fastapi.middleware.cors import CORSMiddleware
+        app.add_middleware(CORSMiddleware, allow_origins=cors_origins, allow_credentials=False,
+                           allow_methods=["GET", "POST"], allow_headers=["content-type", "x-kig-operator-token"])
 
     def operator(x_kig_operator_token: str = Header(default="")) -> None:
         if not hmac.compare_digest(x_kig_operator_token.encode(), token.encode()):
