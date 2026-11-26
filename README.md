@@ -36,6 +36,14 @@ Run the API (binds to 127.0.0.1):
 KIG_DATA=./data uvicorn --factory kig.server:app --host 127.0.0.1 --port 8443
 ```
 
+Create the first admin (once), enrol more devices, call commands:
+
+```bash
+python -m kig.cli init --data ./data --user asha --device asha-laptop --out asha-laptop.json
+python -m kig.cli keygen --user asha --device asha-phone --out asha-phone.json > phone-pub.json
+python -m kig.cli call --url http://127.0.0.1:8443 --key asha-laptop.json enroll_device "$(cat phone-pub.json)"
+```
+
 First start creates `data/server_sign.key`, `data/operator.token` (both mode 0600) and the audit log. Operator reads need header `X-KIG-Operator-Token`. Nothing secret is stored in the repository.
 
 ## API

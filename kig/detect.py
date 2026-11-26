@@ -45,6 +45,8 @@ class Detector:
     failures: dict[str, list[tuple[float, int]]] = field(default_factory=dict)
     first_device_ts: dict[str, float] = field(default_factory=dict)
     max_tracked: int = 4096
+    last_alert: dict[str, float] = field(default_factory=dict)
+    dedupe_s: int = 60
 
     def observe(self, entry: dict[str, Any]) -> list[Alert]:
         t, seq, ts, d = entry["type"], entry["seq"], entry["ts"], entry["data"]
@@ -56,6 +58,8 @@ class Detector:
             self.first_device_ts.setdefault(d["user"], ts)
         elif t == "auth.revoked_device_use":
             dev = d["device"]
+            if self._dup(f"R1:{dev}", ts):
+                return alerts
             ref = self.removed_at.get(dev)
             ev = [seq] + ([ref] if ref is not None else [])
             alerts.append(
@@ -70,6 +74,8 @@ class Detector:
                 )
             )
         elif t == "auth.replay":
+            if self._dup(f"R2:{d['device']}@{d.get('source')}", ts):
+                return alerts
             alerts.append(
                 Alert(
                     "R2-REPLAY",
@@ -120,3 +126,13 @@ class Detector:
                 )
             )
         return alerts
+
+    def _dup(self, key: str, ts: float) -> bool:
+        """Suppress repeat alerts for the same subject; the audit log keeps every attempt."""
+        last = self.last_alert.get(key)
+        if last is not None and ts - last < self.dedupe_s:
+            return True
+        self.last_alert[key] = ts
+        if len(self.last_alert) > self.max_tracked:
+            self.last_alert.pop(next(iter(self.last_alert)))
+        return False

@@ -191,3 +191,44 @@ def test_device_ids_never_reused(w):
 def test_bootstrap_only_once(w):
     d = Device.generate("x", "x")
     assert code(w.svc.bootstrap, "x", "x", d.sign_pub, d.kem_pub) == "already_bootstrapped"
+
+
+def test_nan_and_bool_fields_rejected(w):
+    import json as _j
+    from kig import crypto as cc
+    body = {"cmd": "whoami", "device": "bob-laptop", "ts": float("nan"), "nonce": "n1", "args": {}}
+    body["sig"] = cc.b64e(cc.sign(w.bob_laptop.sign_sec, "cmd", cc.canonical(body)))
+    assert code(w.svc.handle, body) == "bad_request"
+    r = w.admin.fetch("report", auto_rotate=False)
+    assert code(w.admin.call, "rotate", file_id="report", expected_epoch=True, ciphertext="AA==", wraps={}) == "conflict"
+
+
+def test_lockout_floods_do_not_grow_the_audit_log(w):
+    for _ in range(3):
+        e = w.bob.envelope("fetch", {"file_id": "report"})
+        e["sig"] = c.b64e(b"x" * 3309)
+        code(w.svc.handle, e, "atk")
+    n = len(w.svc.audit.entries)
+    for _ in range(200):
+        code(w.svc.handle, w.bob.envelope("fetch", {"file_id": "report"}), "atk")
+    assert len(w.svc.audit.entries) == n + 1
+
+
+def test_repeat_revoked_use_dedupes_alerts_but_logs_every_attempt(w):
+    stolen = Client(w.alice_phone, w.svc.handle, w.clock)
+    w.admin.call("report_lost", device="alice-phone")
+    for _ in range(5):
+        code(stolen.fetch, "report")
+    assert len(alerts(w, "R1-REVOKED-DEVICE-USE")) == 1
+    assert sum(e["type"] == "auth.revoked_device_use" for e in w.svc.audit.entries) == 5
+
+
+def test_audit_truncation_detected_on_restart(w, tmp_path):
+    import pytest
+    from kig.audit import AuditError
+    w.admin.call("revoke_device", device="alice-phone")
+    p = tmp_path / "data" / "audit.jsonl"
+    lines = p.read_text().splitlines()
+    p.write_text("\n".join(lines[:-2]) + "\n")  # drop the newest entries (chain still valid)
+    with pytest.raises(AuditError):
+        GuardService(tmp_path / "data", clock=w.clock)

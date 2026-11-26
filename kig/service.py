@@ -14,6 +14,7 @@ Zero-trust rules enforced on every request:
 from __future__ import annotations
 
 import json
+import math
 import os
 import threading
 import time
@@ -21,7 +22,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from . import crypto as c
-from .audit import AuditLog
+from .audit import AuditError, AuditLog
 from .detect import Alert, Detector
 
 SKEW_S = 30
@@ -61,10 +62,12 @@ class GuardService:
         self._load_server_key()
         self.audit = AuditLog(self.dir / "audit.jsonl", self._sec, self.pub)
         self.state: dict[str, Any] = self._load_state()
+        self._check_not_truncated()
         self.detector = Detector()
         self.locks: dict[str, float] = {}
         self.nonces: dict[str, float] = {}
         self._src = "local"
+        self._lock_logged: set[str] = set()
         # Nonces are memory-only, so refuse anything signed before this process started.
         self.boot = self.clock()
         self._replay_detector()
@@ -87,8 +90,16 @@ class GuardService:
             return json.loads(p.read_text())
         return {"users": {}, "devices": {}, "files": {}, "applied": 0}
 
+    def _check_not_truncated(self) -> None:
+        n = int(self.state.get("applied", 0))
+        if n > len(self.audit.entries):
+            raise AuditError(f"audit log truncated: state has seen {n} entries, log has {len(self.audit.entries)}")
+        if n and self.audit.entries[n - 1]["hash"] != self.state.get("audit_head"):
+            raise AuditError("audit log does not match the head recorded in state")
+
     def _persist(self) -> None:
         self.state["applied"] = len(self.audit.entries)
+        self.state["audit_head"] = self.audit.head
         _atomic_write(self.dir / "state.json", json.dumps(self.state, sort_keys=True).encode())
 
     def _replay_detector(self) -> None:
@@ -132,6 +143,9 @@ class GuardService:
     def _raise(self, a: Alert) -> None:
         data = a.as_data()
         if a.lock_key:
+            self._lock_logged.discard(a.lock_key)
+            if len(self.locks) > 4096:
+                self.locks = {k: v for k, v in self.locks.items() if v > self.clock()}
             self.locks[a.lock_key] = a.lock_until
             data["lock_key"], data["lock_until"] = a.lock_key, a.lock_until
         self.audit.append(self.clock(), "alert.raised", "detector", data)
@@ -210,7 +224,8 @@ class GuardService:
             sig = c.b64d(env["sig"])
             if not (isinstance(cmd, str) and isinstance(dev_id, str) and isinstance(nonce, str)):
                 raise KeyError
-            if not isinstance(args, dict) or isinstance(ts, bool) or not isinstance(ts, (int, float)):
+            if (not isinstance(args, dict) or isinstance(ts, bool) or not isinstance(ts, (int, float))
+                    or not math.isfinite(ts)):
                 raise KeyError
             if len(nonce) > 64 or len(dev_id) > 64:
                 raise KeyError
@@ -218,8 +233,11 @@ class GuardService:
             raise Denied("bad_request", "malformed envelope", 400) from None
 
         now = self.clock()
-        if self.locks.get(f"{dev_id[:64]}@{self._src}", 0) > now:
-            self._log("auth.locked_out", "unknown", {"device": dev_id[:64], "cmd": cmd[:32], "source": self._src})
+        lkey = f"{dev_id[:64]}@{self._src}"
+        if self.locks.get(lkey, 0) > now:
+            if lkey not in self._lock_logged:  # one audit line per lock, so a flood cannot fill the disk
+                self._lock_logged.add(lkey)
+                self._log("auth.locked_out", "unknown", {"device": dev_id[:64], "cmd": cmd[:32], "source": self._src})
             raise Denied("locked", "identifier temporarily locked after repeated failures", 429)
 
         dev = self.state["devices"].get(dev_id)
@@ -251,8 +269,14 @@ class GuardService:
         fn = getattr(self, f"cmd_{cmd}", None)
         if fn is None or cmd.startswith("_"):
             raise Denied("bad_request", "unknown command", 400)
-        result = fn(dev_id, dev["user"], user["role"], args)
-        self._persist()
+        try:
+            result = fn(dev_id, dev["user"], user["role"], args)
+            self._persist()
+        except Denied:
+            raise  # commands validate before mutating, so a denial leaves state untouched
+        except Exception:  # noqa: BLE001  never leave half-applied in-memory state
+            self.state = self._load_state()
+            raise Denied("internal", "internal error; no change was committed", 500) from None
         return result
 
     def _prune_nonces(self, now: float) -> None:
@@ -440,7 +464,8 @@ class GuardService:
             self._deny("access.denied", dev, {"device": dev, "file": fid, "action": "rotate",
                                               "why": "no key wrapped for this device"},
                        "forbidden", "no key available for this device")
-        if args.get("expected_epoch") != f["epoch"]:
+        ep = args.get("expected_epoch")
+        if isinstance(ep, bool) or ep != f["epoch"]:
             raise Denied("conflict", f"epoch changed, now {f['epoch']}; re-fetch and retry", 409)
         acl = f["acl"]
         if "acl" in args:
