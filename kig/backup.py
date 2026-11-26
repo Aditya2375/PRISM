@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import Any
 
 from . import crypto as c
+from . import vault
 from .audit import verify_chain
 from .service import GuardService, _atomic_write
 
@@ -31,9 +32,19 @@ class BackupError(Exception):
     pass
 
 
-def keygen(out_dir: str | Path) -> None:
-    """Create the operator's backup key pair. Keep ``backup.key`` offline."""
+def load_secret(path: str | Path, passphrase: str | None = None) -> bytes:
+    raw = Path(path).read_bytes()
+    return vault.open_(raw, passphrase or vault.passphrase_from_env(), "prism/backup-key") if vault.is_sealed(raw) else raw
+
+
+def keygen(out_dir: str | Path, passphrase: str | None = None) -> None:
+    """Create the operator's backup key pair. Keep ``backup.key`` offline.
+
+    With a passphrase (or PRISM_PASSPHRASE) the secret key is encrypted at rest."""
     pub, sec = c.kem_keygen()
+    passphrase = passphrase or vault.passphrase_from_env()
+    if passphrase:
+        sec = vault.seal(sec, passphrase, "prism/backup-key")
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
     _atomic_write(out / "backup.pub", pub, 0o644)

@@ -1,5 +1,7 @@
 import copy
 
+import pytest
+
 from kig.service import GRACE_S
 from kig import crypto as c
 from kig.client import Client, Device
@@ -249,3 +251,23 @@ def test_user_text_cannot_forge_a_second_event_or_actor(w):
     rogue = Client(Device.generate("alice-laptop\nfake", "alice"), w.svc.handle, w.clock)
     assert code(rogue.fetch, "report") == "unauthorized"
     assert w.svc.audit.entries[-1]["actor"] == "unknown"
+
+
+def test_client_detects_version_rollback(w):
+    assert w.bob.fetch("report", auto_rotate=False) == b"top secret payroll"
+    w.admin.rotate("report")
+    assert w.bob.fetch("report", auto_rotate=False) == b"top secret payroll"
+    f = w.svc.state["files"]["report"]
+    f["epoch"] = 1                                   # a malicious server serves the old version again
+    f["wraps"] = f["prev"]["wraps"]; f["ciphertext"] = f["prev"]["ciphertext"]
+    from kig import crypto as c
+    with pytest.raises(c.CryptoError, match="rollback"):
+        w.bob.fetch("report", auto_rotate=False)
+
+
+def test_torn_revoked_log_line_is_ignored(w, tmp_path):
+    w.admin.call("revoke_device", device="bob-laptop")
+    with open(tmp_path / "data" / "revoked.log", "a") as fh:
+        fh.write("alice-lap")                         # torn, never acknowledged
+    svc2 = GuardService(tmp_path / "data", clock=w.clock)
+    assert svc2.revoked == {"bob-laptop"}

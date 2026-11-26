@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from . import crypto as c
+from . import vault
 from .audit import AuditError, AuditLog
 from .detect import Alert, Detector
 
@@ -76,7 +77,7 @@ class GuardService:
         self.name = name
         self.read_only = read_only
         self.dir = Path(data_dir)
-        self.dir.mkdir(parents=True, exist_ok=True)
+        self.dir.mkdir(parents=True, exist_ok=True, mode=0o700)
         self.clock = clock
         self._lock = threading.RLock()
         self.crash_at: str | None = None  # fault injection: name of a crash point
@@ -121,11 +122,14 @@ class GuardService:
 
     def _load_server_key(self) -> None:
         sec_p, pub_p = self.dir / "server_sign.key", self.dir / "server_sign.pub"
+        pw = vault.passphrase_from_env()
         if sec_p.exists() and pub_p.exists():
-            self._sec, self.pub = sec_p.read_bytes(), pub_p.read_bytes()
+            raw = sec_p.read_bytes()
+            self._sec = vault.open_(raw, pw, "prism/server-key") if vault.is_sealed(raw) else raw
+            self.pub = pub_p.read_bytes()
         else:
             self.pub, self._sec = c.sig_keygen()
-            _atomic_write(sec_p, self._sec)
+            _atomic_write(sec_p, vault.seal(self._sec, pw, "prism/server-key") if pw else self._sec)
             _atomic_write(pub_p, self.pub, 0o644)
 
     def _crash(self, point: str) -> None:
@@ -141,7 +145,11 @@ class GuardService:
         p = self.dir / "revoked.log"
         out: set[str] = set()
         if p.exists():
-            for line in p.read_text().splitlines():
+            text = p.read_text()
+            lines = text.split("\n")
+            if lines and lines[-1] != "":
+                lines.pop()          # unterminated final line: a torn write that was never acknowledged
+            for line in lines:
                 if line.strip():
                     out.add(line.strip().split("\t")[0])
         return out
@@ -385,11 +393,13 @@ class GuardService:
             raise Denied("read_only", f"node {self.name} is a read-only replica; send writes to the primary", 421)
         try:
             result = fn(dev_id, dev["user"], user["role"], args)
-            self._persist()
+            if cmd not in READ_ONLY_CMDS:   # reads change no state; the audit log alone records them
+                self._persist()
         except Denied:
             raise  # commands validate before mutating, so a denial leaves state untouched
         except Exception:  # noqa: BLE001  never leave half-applied in-memory state
             self.state = self._load_state()
+            self._recover_rotations()
             raise Denied("internal", "internal error; no change was committed", 500) from None
         return result
 

@@ -120,3 +120,12 @@ def test_older_valid_backup_refused_unless_flagged_and_revocations_unioned(w, tm
     svc2 = GuardService(tmp_path / "r2", clock=w.clock)
     w.clock.tick(1)
     assert code(Client(w.bob_laptop, svc2.handle, w.clock).fetch, "report") == "revoked"
+
+
+def test_backup_key_can_be_passphrase_protected(tmp_path):
+    b.keygen(tmp_path / "ops2", passphrase="pw")
+    sec = b.load_secret(tmp_path / "ops2" / "backup.key", "pw")
+    from kig import vault
+    assert len(sec) > 0 and vault.is_sealed((tmp_path / "ops2" / "backup.key").read_bytes())
+    with pytest.raises(vault.VaultError):
+        b.load_secret(tmp_path / "ops2" / "backup.key", "bad")

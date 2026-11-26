@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from . import crypto as c
+from . import vault
 
 Transport = Callable[[dict[str, Any]], dict[str, Any]]
 
@@ -44,23 +45,32 @@ class Device:
         return {"device": self.device_id, "user": self.user,
                 "sign_pub": c.b64e(self.sign_pub), "kem_pub": c.b64e(self.kem_pub)}
 
-    def save(self, path: str | Path) -> None:
+    def save(self, path: str | Path, passphrase: str | None = None) -> None:
+        """Write the key file atomically. With a passphrase (or PRISM_PASSPHRASE) it is encrypted."""
         data = {k: (c.b64e(v) if isinstance(v, bytes) else v) for k, v in self.__dict__.items()}
-        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-        with os.fdopen(fd, "w") as fh:
-            json.dump(data, fh)
+        raw = json.dumps(data).encode()
+        passphrase = passphrase or vault.passphrase_from_env()
+        blob = vault.seal(raw, passphrase, "prism/device-key") if passphrase else raw
+        vault.write_atomic(path, blob)
 
     @classmethod
-    def load(cls, path: str | Path) -> "Device":
-        raw = json.loads(Path(path).read_text())
-        return cls(raw["device_id"], raw["user"], *(c.b64d(raw[k]) for k in
-                   ("sign_pub", "sign_sec", "kem_pub", "kem_sec")))
+    def load(cls, path: str | Path, passphrase: str | None = None) -> "Device":
+        blob = Path(path).read_bytes()
+        if vault.is_sealed(blob):
+            blob = vault.open_(blob, passphrase or vault.passphrase_from_env(), "prism/device-key")
+        try:
+            raw = json.loads(blob)
+            return cls(raw["device_id"], raw["user"], *(c.b64d(raw[k]) for k in
+                       ("sign_pub", "sign_sec", "kem_pub", "kem_sec")))
+        except Exception:  # noqa: BLE001
+            raise vault.VaultError("key file is damaged") from None
 
 
 class Client:
     def __init__(self, device: Device, transport: Transport, clock: Callable[[], float] = time.time,
                  audience: str = "primary"):
         self.dev, self.send, self.clock, self.aud = device, transport, clock, audience
+        self.seen_epoch: dict[str, int] = {}   # newest key version this client has seen per file
 
     # -- envelope ------------------------------------------------------------
     def envelope(self, cmd: str, args: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -101,8 +111,11 @@ class Client:
     def fetch(self, file_id: str, auto_rotate: bool = True, epoch: int | None = None) -> bytes:
         r = self.call("fetch", file_id=file_id) if epoch is None else self.call("fetch", file_id=file_id, epoch=epoch)
         epoch = r["epoch"]
+        if self.seen_epoch.get(file_id, 0) > epoch and not (r.get("grace_remaining_s") is not None):
+            raise c.CryptoError(f"rollback detected: server offered version {epoch}, already saw {self.seen_epoch[file_id]}")
         dek = self._unwrap(r["wrap"], file_id, epoch)
         plain = c.aead_decrypt(dek, c.b64d(r["ciphertext"]), _file_aad(file_id, epoch))
+        self.seen_epoch[file_id] = max(self.seen_epoch.get(file_id, 0), epoch)
         if r["needs_rotation"] and auto_rotate:
             try:
                 self._rotate_from(file_id, epoch, plain, r["acl"])
