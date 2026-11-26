@@ -18,8 +18,12 @@ someone who does not trust the service.**
 * **Hybrid post-quantum keys.** Each file version gets a fresh AES-256-GCM key. It is wrapped per device with
   ML-KEM-768 + X25519 (HPKE). A device that is no longer eligible gets no wrap. Every signature is ML-DSA-65.
 * **Revocation that fails closed.** The revoked set is written first, survives restarts, and only grows. A three-node
-  cluster (simulated in one process) pushes signed revocation certificates; a node cut off from the primary refuses
-  everyone after a 5 s lease.
+  cluster pushes signed revocation certificates, and a node cut off from the primary refuses everyone once its lease
+  runs out. It runs as three real OS processes over TCP on localhost (`python -m kig.netcluster`) and as an in-process
+  simulation that keeps the fast tests fast.
+* **Powerful devices are guarded.** A phone can be enrolled as a limited device that never acts as an admin. Removing
+  an admin's device, or disabling an admin, needs another admin whose device is at least 15 minutes old, and removing
+  a limited device of an admin raises an alert. Deleted file ids are never reused by accident.
 * **Re-keying with crash recovery.** A rotation is journalled; killing the process at any point leaves one consistent
   version and no lost revocation.
 * **Trust, but verify.** Every decision is a signed, hash-chained audit entry. Each file version carries a
@@ -27,14 +31,15 @@ someone who does not trust the service.**
   the audit log, a backup or the state snapshot with no service code and no private key.
 * **Backup and restore.** Signed, sealed to an offline key, streamed; restore needs evidence about rollback or an
   audited waiver. The backup key can be split k-of-n.
-* **Explainable detection.** Four rules (revoked-device use, replay, auth-failure burst, privilege escalation). No ML.
+* **Explainable detection.** Five rules (revoked-device use, replay, auth-failure burst, privilege escalation, removal of an admin's limited device). No ML.
 
 ## How to see it in 90 seconds
 
 ```
 pip install -r requirements.txt
-python -m kig.demo --story     # lost phone, 3 nodes, tamper, crash and recovery, claim-to-evidence table
-python -m pytest -q            # 350+ tests, green on a clean clone
+python -m kig.demo --story     # lost phone, 3 simulated nodes, tamper, crash and recovery, claim-to-evidence table
+python -m kig.demo --net       # revocation across 3 real node processes over TCP on localhost
+python -m pytest -q            # 480 tests, green on a clean clone
 ```
 
 ## Evidence, not assertion
@@ -58,8 +63,11 @@ Shamir for the optional key split. All code written during the event; every comm
 ## Honest limits
 
 * A revoked device keeps what it already decrypted. Rotation protects later versions.
-* The cluster nodes are in-process simulations; the printed millisecond figures are dominated by a delay we inject.
-  A cut-off replica can serve for at most 5 s.
+* The three real node processes share one machine, one clock and loopback, so their millisecond figures are not a
+  network measurement. A cut-off replica can serve a lost device for at most one lease (2 s in the real-process test,
+  5 s in the in-process simulation). Sync between nodes is plain HTTP and needs TLS across hosts, and the shared
+  cluster token lets its holder force repeated snapshots.
+* A stolen full admin device is an admin until the host removes it. The 15 minute cooling-off uses the service clock.
 * The audit log is a hash chain. Removing its last entries together with its anchor is undetectable unless you keep a
   head elsewhere; the verifier says so and exits 2 in that case.
 * The server is trusted at first contact for the device directory; the enrolment fingerprint check narrows that.
@@ -69,4 +77,4 @@ Shamir for the optional key split. All code written during the event; every comm
 
 `README.md` (run it), `THREAT_MODEL.md` (assets, attackers, limits), `docs/CRYPTO.md` (what we use and claim),
 `docs/CORE.md` (storage, backup, verifier, key split), `docs/REVOCATION.md`, `docs/QA.md` (likely judge questions),
-`docs/RELATED.md` (Vault, Sigstore Rekor).
+`docs/RELATED.md` (Vault, Sigstore Rekor), `docs/CORE_HARDENING.md` (device classes, removal rules, deleted ids, limits), `docs/DEMO_SCRIPT.md` (video walk-through), `docs/ARCHITECTURE_NOTES.md` (architecture paragraphs).

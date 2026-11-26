@@ -12,7 +12,8 @@ DevForge Yugaantar, Track 4: Post-Quantum Security ("Trust, But Verify").
 
 ```bash
 pip install -r requirements.txt
-python -m kig.demo --story     # lost phone, 3 nodes, tamper, crash and recovery, claim-to-evidence table
+python -m kig.demo --story     # lost phone, 3 simulated nodes, tamper, crash and recovery, claim-to-evidence table
+python -m kig.demo --net       # the same revocation across 3 real node processes over TCP on localhost (about 10 s)
 python -m kig.bench            # measured cost of put, fetch, rotate, backup, restore
 python -m pytest -q            # the full suite
 ```
@@ -31,7 +32,7 @@ python -m pytest -q            # the full suite
                                                 signed encrypted backups, doctor, bench
 ```
 
-* Revocation, replicas and what is simulated: `docs/REVOCATION.md`.
+* Revocation, the in-process simulation and the real three-process cluster: `docs/REVOCATION.md`. Device classes, removal rules, deleted ids and the limits that remain: `docs/CORE_HARDENING.md`. Video walk-through of the core: `docs/DEMO_SCRIPT.md`. Architecture paragraphs: `docs/ARCHITECTURE_NOTES.md`.
 * Two-page brief: `docs/BRIEF.md`. Likely judge questions with evidence: `docs/QA.md`. How this relates to Vault and Sigstore Rekor: `docs/RELATED.md`.
 * Storage, journal, backup, the signed manifest and the standalone verifier (`verifier/prism_verify.py`): `docs/CORE.md`.
 * Cryptography, known-answer tests, naming: `docs/CRYPTO.md`.
@@ -73,7 +74,7 @@ python -m pytest -q            # the full suite
 
 ## Design in one paragraph
 
-Each device holds an ML-DSA-65 signing key and a hybrid ML-KEM-768 + X25519 key. A file is encrypted on the client with a random AES-256-GCM key (the DEK). The DEK is wrapped separately for each eligible device with the hybrid KEM. The service stores ciphertext and wrapped keys only, never a DEK. Every request is a device-signed envelope with timestamp and nonce. Revoking a device takes effect on the primary at once (in the in-process simulation replicas follow within the injected 5 to 50 ms network delay; a cut-off replica is bounded by a 5 s lease; see `docs/REVOCATION.md`), removes its wrapped keys and flags files for rotation, and the next authorised read re-encrypts under a fresh DEK and epoch. See `THREAT_MODEL.md` for assets, attackers, assumptions and limits.
+Each device holds an ML-DSA-65 signing key and a hybrid ML-KEM-768 + X25519 key. A file is encrypted on the client with a random AES-256-GCM key (the DEK). The DEK is wrapped separately for each eligible device with the hybrid KEM. The service stores ciphertext and wrapped keys only, never a DEK. Every request is a device-signed envelope with timestamp and nonce. Revoking a device takes effect on the primary at once (replicas follow through signed revocation certificates: in the three-process cluster, `python -m kig.netcluster`, the last node refused the device after tens of milliseconds on one machine, a loopback figure and not a network measurement; in the in-process simulation, within the injected 5 to 50 ms delay; a cut-off replica is bounded by its lease, 2 s in the real-process harness and 5 s in the simulation; see `docs/REVOCATION.md`), removes its wrapped keys and flags files for rotation, and the next authorised read re-encrypts under a fresh DEK and epoch. See `THREAT_MODEL.md` for assets, attackers, assumptions and limits.
 
 ## Clean-machine setup
 
@@ -149,6 +150,7 @@ A browser cannot make ML-DSA signatures, so a page for an ordinary device holder
 | R2-REPLAY | high | a nonce is reused | denied and alerted when it comes from another source or with a different body; an identical retry from the same source is refused quietly. Nobody is locked out |
 | R3-AUTH-FAILURE-BURST | high | 3 failed authentications for one device from one source in 60 s | alert only. Nobody is locked out; logging is rate bounded and summarised as `auth.failures_suppressed` |
 | R4-PRIVILEGE-ESCALATION | high, or critical if the user's first device was enrolled under 10 min earlier | a user becomes admin | recorded; demote with `set_role` |
+| R5-ADMIN-LIMITED-DEVICE-REMOVED | high | a limited device of an admin is removed | alert only; expected after a lost phone, a sign of a stolen acting device otherwise |
 
 ## Layout
 
@@ -160,7 +162,7 @@ kig/threshold.py k-of-n split of a secret (vetted Shamir)
 kig/backup.py    signed encrypted backups, verify before restore
 kig/audit.py     signed hash-chained log (the service's own checker)
 kig/store.py     signed snapshot + signed journal (O(1) writes)
-kig/cluster.py   primary + two replicas, signed revocation certificates, lease (in one process, for fast tests)
+kig/cluster.py   primary + two replicas, signed revocation certificates, lease (in one process; the fast-test path)
 kig/node.py      one cluster node as its own OS process over HTTP
 kig/netcluster.py three node processes on localhost, TCP relays, measured revocation time
 kig/doctor.py    read-only directory checker

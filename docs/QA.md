@@ -35,9 +35,11 @@ next version. This is written in the README, `THREAT_MODEL.md` and `docs/CRYPTO.
 `docs/REVOCATION.md`, tests `test_revoked_device_rejected_everywhere_including_captured_request`,
 `test_replay_and_stale_and_bad_signature`.
 
-**How fast does revocation reach the other nodes, honestly?** The nodes are in-process simulations. The printed
-times are dominated by the 5 to 50 ms network delay we inject, so they are not network measurements. A replica cut off
-from the primary can serve for at most the 5 s lease, then refuses everyone. `docs/REVOCATION.md`, "Limits".
+**How fast does revocation reach the other nodes, honestly?** Two ways to run it. `python -m kig.netcluster` starts
+three real node processes over TCP on one machine and printed a median of tens of milliseconds to the last node; it is
+one host, one clock and loopback, so it is not a network measurement. The in-process simulation prints times dominated
+by the 5 to 50 ms delay we inject. A replica cut off from the primary can serve for at most one lease (2 s in the
+real-process harness, 5 s in the simulation), then refuses everyone. `docs/REVOCATION.md`, "Limits".
 
 **What if a replica is malicious?** A malicious replica can ignore revocation for clients that talk only to it. The
 documentation says so; a client needing protection must ask a second node.
@@ -97,9 +99,9 @@ can slow it. `THREAT_MODEL.md`, "Availability".
 
 ## Scope and honesty
 
-**Is the cluster real?** No. It is a simulation of the replication logic in one process.
+**Is the cluster real?** Partly. The three nodes run as separate OS processes over TCP (`python -m kig.netcluster`, `python -m kig.demo --net`), but on one host, with plain HTTP and a shared token. The in-process version stays as the fast-test path. It is not a multi-host deployment.
 **Is there TLS?** Out of scope: the demo binds to localhost; deployment is assumed to add TLS.
-**Is there AI or ML?** No. Detection is four explainable rules (README table).
+**Is there AI or ML?** No. Detection is five explainable rules (README table).
 **Performance?** `python -m kig.bench`; the table and its limits are in `docs/CORE.md` (backup memory grows with the
 number of files).
 **What would you do with more time?** A real multi-host cluster, a hardware key store driver, a Merkle-tree log with

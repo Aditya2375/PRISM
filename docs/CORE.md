@@ -135,8 +135,8 @@ flips are all rejected (`tests/test_backup.py`).
   `peek_meta` (used for backup counters of a surviving directory) reads unverified values and can only cause
   a refusal or a needless override, never a wrong restore. Replica nodes write their whole epoch map with every
   journal line, so replica writes cost grows with the number of files.
-* Single host. The cluster nodes in `kig/cluster.py` are in-process simulations with their own data
-  directories, not separate machines.
+* Single host. The cluster nodes in `kig/cluster.py` are in-process simulations, and `kig/node.py` runs them as
+  separate OS processes over TCP; both use their own data directories on one machine, one clock and loopback.
 
 ## Measured cost (`python -m kig.bench`)
 
@@ -174,7 +174,7 @@ check and the audit chain run there. On the original it then hashes every refere
 
 `python -m kig.demo` is the lost-device story. `python -m kig.demo --story` adds a blob tamper, an edited audit
 copy, a crash in the middle of a rotation with recovery on restart, and a claim-to-evidence table. It exits 1 if
-any of those checks fails. Step 6 shows per-node revocation timings on the simulated three-node cluster.
+any of those checks fails. Step 6 shows per-node revocation timings on the simulated three-node cluster; `--net` does the same with three real processes.
 
 ## Enrolling a device from the command line
 
