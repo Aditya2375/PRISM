@@ -57,3 +57,15 @@
 - **Threshold shares:** a forged share cannot block recovery while k genuine shares are supplied, but the search is bounded, so many forged shares for one index slow it; the share check value is not a MAC.
 - **Write roles:** ACL members read. Only the file owner or an admin can write or rotate. Each version carries a key-commitment tag, so a wrong key is rejected rather than decrypting garbage.
 - **Backup memory:** blobs are streamed; the sealed metadata (state and audit log) is held in memory, so memory grows with the number of files and audit entries, not with stored bytes. Writes pause while a backup is built. The backup contains client ciphertext, so blob confidentiality rests on the clients' encryption, and the metadata is sealed to the backup key.
+
+## Out of scope, and why
+
+Track 4 lists more topics than one prototype should claim. These are not built, and the prototype makes no claim about them.
+
+- **SLH-DSA.** Signatures use ML-DSA-65 only. One standardized signature scheme is enough for the flows here, and a second one would add code to test without adding a property we claim. Nothing is signed with a hash-based scheme.
+- **Double Ratchet, PQXDH and forward secrecy for completed sessions.** This is a key service for shared files, not a messenger. There are no sessions. File keys are wrapped to a device key with a fresh KEM encapsulation per wrap, but a stolen long-term device key still opens every wrap made for that device and any ciphertext the thief holds. We do not claim forward secrecy.
+- **End-to-end messages, loss and reordering, delivery failure reports.** Not built, for the same reason: the unit of work is a file version, not a message stream. Duplicate and replayed requests to the service are rejected (nonce, 30 s window, signed audience).
+- **Session resumption.** Not supported. Every request is signed on its own, so there is no session identifier that another identity could inherit.
+- **Merkle transparency log.** The audit log is a signed hash chain, not a Merkle tree. It proves order and edits inside the log, not completeness, and has no inclusion or consistency proofs for third parties. Keeping an external head (`--expect-head`, `KIG_PIN_FILE`) is how completeness is checked.
+- **Graph or ATT&CK style detection, and lateral movement between services.** Detection is five explainable rules over one service's audit events. There is no model of paths between services, so an attacker moving across services with valid credentials is not flagged. The measured recall reflects this (`README.md`, "Detection, measured").
+- **Hybrid logical clocks and out-of-order events from different clocks.** Events are ordered by the audit sequence the service assigns, and the rules and cooling-off use the service's own clock. Nodes in this repository share one host and one clock. We do not handle events that arrive from other sources with different clock offsets, and we do not flag uncertain ordering.

@@ -25,6 +25,14 @@ class Alert:
     subject: str = ""
     lock_key: str = ""
     lock_until: float = 0.0
+    # who and where: structured, so a tool can act on an alert without parsing the words.
+    # "unknown" is stated when the audit entry does not carry the value (never guessed).
+    device: str = "unknown"
+    user: str = "unknown"
+    service: str = "unknown"   # the node that raised it
+    event: str = "unknown"     # the audit entry type that triggered it
+    source: str = "unknown"    # network source of the request, when one was logged
+    actor: str = "unknown"     # the device that performed the action, when the event is an action
 
     def as_data(self) -> dict[str, Any]:
         return {
@@ -34,6 +42,12 @@ class Alert:
             "evidence": self.evidence,
             "response": self.response,
             "subject": self.subject,
+            "device": self.device,
+            "user": self.user,
+            "service": self.service,
+            "event": self.event,
+            "source": self.source,
+            "actor": self.actor,
         }
 
 
@@ -47,11 +61,27 @@ class Detector:
     max_tracked: int = 4096
     last_alert: dict[str, float] = field(default_factory=dict)
     dedupe_s: int = 60
+    service: str = "unknown"
+    owner_of: dict[str, str] = field(default_factory=dict)  # device -> user, from device.enrolled entries
 
     def observe(self, entry: dict[str, Any]) -> list[Alert]:
         t, seq, ts, d = entry["type"], entry["seq"], entry["ts"], entry["data"]
         alerts: list[Alert] = []
         actor = entry.get("actor", "?")
+        src = d.get("source") if isinstance(d.get("source"), str) and d.get("source") else "unknown"
+        alerts = self._observe(entry, t, seq, ts, d, actor, src)
+        for a in alerts:
+            a.service, a.event = self.service, t
+            if a.source == "unknown":
+                a.source = src
+            if a.actor == "unknown" and actor != "?":
+                a.actor = str(actor)
+            if a.user == "unknown" and a.device != "unknown":
+                a.user = self.owner_of.get(a.device, "unknown")
+        return alerts
+
+    def _observe(self, entry: dict[str, Any], t: str, seq: int, ts: float, d: dict[str, Any], actor: str, src: str) -> list[Alert]:
+        alerts: list[Alert] = []
 
         if t in ("device.revoked", "device.lost"):
             self.removed_at[d["device"]] = seq
@@ -66,10 +96,16 @@ class Detector:
                     [seq],
                     response="recorded; a stolen full admin device can remove the owner's limited devices",
                     subject=str(d.get("user")),
+                    device=str(d.get("device") or "unknown"),
+                    user=str(d.get("user") or "unknown"),
                 )
             )
         if t == "device.enrolled":
             self.first_device_ts.setdefault(d["user"], ts)
+            if d.get("device"):
+                self.owner_of[str(d["device"])] = str(d["user"])
+                if len(self.owner_of) > self.max_tracked:
+                    self.owner_of.pop(next(iter(self.owner_of)))
         elif t == "auth.revoked_device_use":
             dev = d["device"]
             if self._dup(f"R1:{dev}", ts):
@@ -85,6 +121,7 @@ class Detector:
                     ev,
                     response="denied; device stays blocked",
                     subject=dev,
+                    device=str(dev),
                 )
             )
         elif t == "auth.replay":
@@ -99,6 +136,7 @@ class Detector:
                     [seq],
                     response="request denied; the sender is not locked out",
                     subject=d["device"],
+                    device=str(d["device"]),
                 )
             )
         elif t == "auth.failures_suppressed":
@@ -111,6 +149,7 @@ class Detector:
                     [seq],
                     response="requests denied and rate limited; nobody is locked out",
                     subject="unauthenticated",
+                    source="unknown",
                 )
             )
         elif t in ("auth.bad_signature", "auth.unknown_device"):
@@ -130,6 +169,8 @@ class Detector:
                         [s for _, s in hist],
                         response="denied and rate limited",
                         subject=key.split("@")[0],
+                        device=key.split("@")[0],
+                        source=str(d.get("source") or "unknown"),
                     )
                 )
                 self.failures[key] = []
@@ -145,6 +186,7 @@ class Detector:
                     [seq],
                     response="recorded; demote with set_role to undo",
                     subject=d["user"],
+                    user=str(d["user"]),
                 )
             )
         return alerts

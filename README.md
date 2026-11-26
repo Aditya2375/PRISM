@@ -68,7 +68,7 @@ python -m pytest -q            # the full suite
 | Core objective | Where to see it |
 | --- | --- |
 | Normal operation | `python -m kig.demo` step 1, `tests/test_service.py::test_normal_operation` |
-| Security control | `report_lost` / `revoke_device` / `disable_user` commands, rules R1 to R4 in `kig/detect.py` |
+| Security control | `report_lost` / `revoke_device` / `disable_user` commands, rules R1 to R5 in `kig/detect.py` |
 | Reliability | stale or replayed requests, epoch conflicts, restart recovery, crash between audit and state (fails closed): `tests/test_service.py` |
 | Verifiable outcome | every decision is a signed, hash-chained audit entry; each alert lists the audit sequence numbers that triggered it |
 
@@ -89,35 +89,89 @@ python -m pytest -q          # all tests
 python -m kig.demo           # the lost-device scenario, end to end
 ```
 
-Run the API (binds to 127.0.0.1):
+Create the first admin **before** starting the service (once). `init` writes the key file and prints the root fingerprint. Give that fingerprint to every client as `--root-fingerprint`; the commands below keep it in `$FP`:
+
+```bash
+K="python -m kig.cli"; U=http://127.0.0.1:8443
+FP=$($K init --data ./data --user asha --device asha-laptop --out asha-laptop.json | sed -n 's/^root fingerprint.*: //p')
+```
+
+Run the API (binds to 127.0.0.1), in a second terminal or in the background:
 
 ```bash
 KIG_DATA=./data uvicorn --factory kig.server:app --host 127.0.0.1 --port 8443
 ```
 
-Create the first admin (once), enrol more devices, call commands:
+Enrol a second device. `keygen` prints the new device's fingerprint on stderr: read it from the new device, compare it, then enrol:
 
 ```bash
-python -m kig.cli init --data ./data --user asha --device asha-laptop --out asha-laptop.json
-python -m kig.cli keygen --user asha --device asha-phone --out asha-phone.json > phone-pub.json
-# keygen prints a fingerprint on stderr: read it from the new device, compare it, then enrol:
-python -m kig.cli enroll --url http://127.0.0.1:8443 --key asha-laptop.json --pub phone-pub.json --expect-fingerprint <fingerprint> --limited
+$K keygen --user asha --device asha-phone --out asha-phone.json > phone-pub.json 2> phone-fp.txt
+PF=$(sed -n 's/^fingerprint.*: //p' phone-fp.txt)
+$K enroll --url $U --root-fingerprint $FP --key asha-laptop.json --pub phone-pub.json --expect-fingerprint $PF --limited
 # --limited: the phone acts as a plain member even for an admin user. The admin can remove it from the laptop (next step),
 # and stealing it gives no admin power. Without --limited the phone is admin-capable and only another admin or the operator can remove it.
 ```
 
-Store a file, read it on the phone, report the phone lost, and check the evidence without the service:
+Store a file (put a line of text in `a.txt` first), read it on the phone, report the phone lost, and check the evidence without the service:
 
 ```bash
-python -m kig.cli put --url http://127.0.0.1:8443 --key asha-laptop.json --file-id doc --path a.txt
-python -m kig.cli get --url http://127.0.0.1:8443 --key asha-phone.json --file-id doc --out b.txt
-python -m kig.cli call --url http://127.0.0.1:8443 --key asha-laptop.json report_lost '{"device":"asha-phone"}'
-python -m kig.cli get --url http://127.0.0.1:8443 --key asha-phone.json --file-id doc --out c.txt   # denied: revoked
+$K put --url $U --root-fingerprint $FP --key asha-laptop.json --file-id doc --path a.txt
+$K get --url $U --root-fingerprint $FP --key asha-phone.json --file-id doc --out b.txt
+$K call --url $U --root-fingerprint $FP --key asha-laptop.json report_lost '{"device":"asha-phone"}'
+$K get --url $U --root-fingerprint $FP --key asha-phone.json --file-id doc --out c.txt   # denied: revoked
 python verifier/prism_verify.py audit --log data/audit.jsonl --pub data/server_sign.pub --anchor data/audit.head
 # exit 2 and a NOTE: the chain verifies, but only a head you recorded elsewhere (--expect-head) proves nothing was cut off the end
 ```
 
 First start creates `data/server_sign.key`, `data/operator.token` (both mode 0600) and the audit log. Operator reads need header `X-KIG-Operator-Token`. Nothing secret is stored in the repository.
+
+## Grace period and cutoff (the organizers' wording)
+
+* **Key rotation: a grace period applies, 30 seconds.** After a rotation the previous key version stays readable for
+  30 s (`GRACE_S`), only for devices that were still eligible, so a transfer in flight can finish. After the cutoff
+  the node answers `key_version_retired`. A client also refuses a version older than the newest it has seen.
+* **Revoked or lost device: grace period zero.** The primary refuses it on its next request. A revoked device gets
+  no grace on rotation either.
+* **Replica that cannot reach the primary: no grace, but a bounded window.** It may keep serving until its lease
+  (`lease_s`) runs out, 2 s in the real three-process harness and 5 s in the in-process simulation. After that it
+  refuses every request with `node_stale` until it has synced.
+
+## Detection, measured (`python -m kig.bench_detect`)
+
+Alerts are structured. Each one carries `rule`, `severity`, `explanation`, `evidence` (audit sequence numbers),
+`device`, `user`, `service` (the node that raised it), `event` (the audit entry type that triggered it), `source`
+(network source, when the request was logged) and `actor`. A value the audit entry does not hold is the string
+`unknown`; it is never guessed. The suppressed-burst alert (R3) has no single identity, so it says `unknown`.
+
+`python -m kig.bench_detect` builds a fresh in-process service for each run, replays a benign trace, then runs nine
+labelled attack scenarios 20 times each. Time to alert runs from the first malicious request to the alert:
+wall milliseconds on this machine, and seconds on the service clock (the clock the rules use). Result on one
+run (Linux x86_64, Python 3.12; wall times depend on the machine):
+
+| Measure | Result |
+| --- | --- |
+| Benign requests replayed | 1,265 |
+| False alerts | 0 (0.0 per 1,000 requests) |
+| Attack runs (9 scenarios x 20) | 180: 120 detected, 60 missed, 0 false positives |
+| Precision / recall / F1 | 1.000 / 0.667 / 0.800 |
+
+| Scenario | Caught | Median wall ms (min-max) | Median service-clock s |
+| --- | --- | --- | --- |
+| lost device used after it was reported lost (R1) | 20/20 | 6.7 (4.5-13.6) | 0 |
+| captured request replayed from another source (R2) | 20/20 | 5.3 (3.1-10.3) | 0 |
+| three bad signatures in a minute from one source (R3) | 20/20 | 15.4 (11.0-20.7) | 2 |
+| flood of unknown device ids, summary alert (R3) | 20/20 | 66.8 (58.9-80.9) | 61 |
+| fresh account promoted to admin (R4) | 20/20 | 6.2 (4.2-9.1) | 0 |
+| admin device removes the owner's limited phone (R5) | 20/20 | 7.3 (4.6-12.4) | 0 |
+| slow guessing, 2 bad signatures per 65 s for 11 minutes | 0/20 | not detected | |
+| member probes a file outside its list | 0/20 | not detected | |
+| valid admin device reads many files | 0/20 | not detected | |
+
+How to read it. The three misses are in the denominator on purpose: the rules are thresholds over audit events and do
+not model slow attacks, probing with valid credentials or an insider with valid admin rights. The scenarios and the
+rules were written by the same people, so this shows what the rules do on these traces and is not a claim about real
+traffic. The flood scenario waits for the one-minute summary, so its 61 s is the rule's design, not slowness.
+R5 fires the same way for the owner reporting a lost phone and for a thief holding the laptop; the alert says so.
 
 ## API
 
@@ -128,7 +182,7 @@ First start creates `data/server_sign.key`, `data/operator.token` (both mode 060
 | `GET /v1/audit?since=N` | operator token | audit entries (signed, chained) |
 | `GET /v1/audit/verify` | operator token | verify the whole chain |
 | `GET /v1/metrics[?format=prometheus]` | operator token | counts only: users, devices by status, files, files needing rotation, audit events by type |
-| `GET /v1/alerts` | operator token | alerts with rule, severity, evidence, response |
+| `GET /v1/alerts` | operator token | alerts with rule, severity, evidence, response, and device, user, service, event, source, actor |
 | `GET /v1/server-key` | none | service ML-DSA public key, for offline audit verification |
 | `GET /healthz` | none | liveness |
 
@@ -167,6 +221,7 @@ kig/node.py      one cluster node as its own OS process over HTTP
 kig/netcluster.py three node processes on localhost, TCP relays, measured revocation time
 kig/doctor.py    read-only directory checker
 kig/bench.py     measured cost at several sizes
+kig/bench_detect.py false alerts per 1,000 benign requests, time to alert, precision, recall and F1 of the rules
 kig/demo.py      the lost-device story
 verifier/        standalone audit, backup and state verifier (no kig imports)
 kig/detect.py    explainable rules
@@ -177,6 +232,14 @@ kig/webapi.py    optional local backend for a browser user screen
 kig/server.py    app factory used by uvicorn (`kig.server:app`)
 tests/           pytest suite
 ```
+
+## Test fixtures contain private keys
+
+`tests/fixtures/v1/` holds frozen data written by release format PRISM-1: `server_sign.key`, `backup.key`,
+`alice-laptop.key.json` and a passphrase in `tests/fixtures/make_v1.py`. They are throwaway keys that protect nothing,
+and secret scanners will flag them. They are committed on purpose: the test opens bytes written by an older release
+to prove the current code still reads them, which cannot be done with keys generated at test time. Apart from the published NIST
+known-answer vectors in `tests/vectors/` (public test data), no test uses a committed key. The service and the demo generate all of their keys at first start.
 
 ## Licence
 

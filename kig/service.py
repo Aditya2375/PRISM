@@ -140,7 +140,7 @@ class GuardService:
         self._check_journal_not_behind_audit()
         self.pin_path = Path(pin_path or os.environ.get("KIG_PIN_FILE") or "") if (pin_path or os.environ.get("KIG_PIN_FILE")) else None
         self._check_pin()
-        self.detector = Detector()
+        self.detector = Detector(service=name)
         self.locks: dict[str, float] = {}  # kept for alert bookkeeping; authentication is never blocked by it
         rep_state = self.state.get("_replica", {})
         # replica bookkeeping is persisted inside the signed state so a restart cannot be used to roll it back

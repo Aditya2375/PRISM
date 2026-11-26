@@ -31,7 +31,11 @@ someone who does not trust the service.**
   the audit log, a backup or the state snapshot with no service code and no private key.
 * **Backup and restore.** Signed, sealed to an offline key, streamed; restore needs evidence about rollback or an
   audited waiver. The backup key can be split k-of-n.
-* **Explainable detection.** Five rules (revoked-device use, replay, auth-failure burst, privilege escalation, removal of an admin's limited device). No ML.
+* **Explainable detection.** Five rules (revoked-device use, replay, auth-failure burst, privilege escalation, removal of an admin's limited device). No ML. Alerts name the device, user, node, triggering event and source (`unknown` when not logged).
+  Measured with `python -m kig.bench_detect` on one machine: 0 false alerts in 1,265 benign requests (0.0 per
+  1,000); nine labelled attack scenarios x 20 runs, precision 1.00, recall 0.67, F1 0.80, median time to alert 5 to
+  15 ms wall (0 to 2 s on the service clock) for the rules that fire. Three scenarios (slow guessing, probing,
+  a valid insider) are missed on purpose and counted. Rules and scenarios have the same authors.
 
 ## How to see it in 90 seconds
 
@@ -41,6 +45,12 @@ python -m kig.demo --story     # lost phone, 3 simulated nodes, tamper, crash an
 python -m kig.demo --net       # revocation across 3 real node processes over TCP on localhost
 python -m pytest -q            # 500+ tests, green on a clean clone
 ```
+
+## Grace period
+
+Rotation: yes, 30 s, in-flight reads of the previous version by still-eligible devices only; then `key_version_retired`.
+Revoked or lost device: zero. A replica cut off from the primary: no grace, but it may serve until its lease runs out
+(`lease_s`: 2 s in the real three-process harness, 5 s in the simulation), then refuses everyone.
 
 ## Evidence, not assertion
 
@@ -77,4 +87,4 @@ Shamir for the optional key split. All code written during the event; every comm
 
 `README.md` (run it), `THREAT_MODEL.md` (assets, attackers, limits), `docs/CRYPTO.md` (what we use and claim),
 `docs/CORE.md` (storage, backup, verifier, key split), `docs/REVOCATION.md`, `docs/QA.md` (likely judge questions),
-`docs/RELATED.md` (Vault, Sigstore Rekor), `docs/CORE_HARDENING.md` (device classes, removal rules, deleted ids, limits), `docs/DEMO_SCRIPT.md` (video walk-through), `docs/ARCHITECTURE_NOTES.md` (architecture paragraphs).
+`docs/RELATED.md` (Vault, Sigstore Rekor), `docs/CORE_HARDENING.md` (device classes, removal rules, deleted ids, limits), `docs/DEMO_SCRIPT.md` (video walk-through), `docs/ARCHITECTURE_NOTES.md` (architecture paragraphs). What we do not build, and why: `THREAT_MODEL.md`, "Out of scope".
