@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 from pathlib import Path
 from typing import Any
 
@@ -56,15 +57,25 @@ def _ctx(manifest: dict[str, Any]) -> bytes:
 
 
 def _counter(d: str | Path) -> int:
+    """Highest counter a data directory remembers: its signed-state value or the plain file."""
+    best = 0
     try:
-        return int((Path(d) / "backup.counter").read_text().strip())
+        best = int((Path(d) / "backup.counter").read_text().strip())
     except (OSError, ValueError):
-        return 0
+        pass
+    try:
+        best = max(best, int(json.loads((Path(d) / "state.json").read_text()).get("backup_counter", 0)))
+    except (OSError, ValueError, AttributeError):
+        pass
+    return best
 
 
 def create(svc: GuardService, backup_pub: bytes, out_path: str | Path) -> dict[str, Any]:
     with svc._lock:  # consistent snapshot
-        counter = _counter(svc.dir) + 1
+        # the counter lives in the signed state; the plain file is only a convenience copy
+        counter = max(int(svc.state.get("backup_counter", 0)), _counter(svc.dir)) + 1
+        svc.state["backup_counter"] = counter
+        svc._persist()
         _atomic_write(svc.dir / "backup.counter", str(counter).encode())
         payload = {
             "state": json.loads(json.dumps(svc.state)),
@@ -179,11 +190,15 @@ def restore(path: str | Path, dest_dir: str | Path, backup_pub: bytes, backup_se
             service_pub_path: str | Path, service_key_path: str | Path,
             live_revoked_log: str | Path | None = None, live_dir: str | Path | None = None,
             allow_older: bool = False, min_counter: int | None = None,
-            accept_rollback: bool = False) -> dict[str, Any]:
+            accept_rollback: bool = False, accept_counter_rollback: bool = False,
+            accept_lost_revocations: bool = False) -> dict[str, Any]:
     """Verify everything, build the new directory aside, then move it into place.
 
     Two guards stop a stale backup from undoing later security decisions, and each needs
     either evidence or an explicit decision from the operator:
+
+    ``accept_rollback`` is shorthand for ``accept_counter_rollback`` plus ``accept_lost_revocations``.
+    Whatever is accepted is recorded as ``restore.rollback_accepted`` in the restored audit chain.
 
     * counter: pass ``min_counter`` (the highest backup counter you know of, written down when
       backups are made) or ``live_dir`` (a surviving data directory), else ``allow_older`` or
@@ -201,20 +216,27 @@ def restore(path: str | Path, dest_dir: str | Path, backup_pub: bytes, backup_se
     service_pub = Path(service_pub_path).read_bytes()
     key_raw, key_sec = _read_service_key(service_key_path, service_pub)
     payload = verify_and_open(path, backup_pub, backup_sec, service_pub)
+    accept_counter_rollback = accept_counter_rollback or accept_rollback
+    accept_lost_revocations = accept_lost_revocations or accept_rollback
     counter = payload["_counter"]
+    accepted: list[str] = []
     known = max([x for x in (min_counter, _counter(live_dir) if live_dir else None) if x is not None], default=None)
-    if known is None and not (allow_older or accept_rollback):
+    if known is None and not (allow_older or accept_counter_rollback):
         raise BackupError("cannot judge how old this backup is: pass min_counter (highest known backup counter), "
                           "live_dir, or accept_rollback")
-    if known is not None and counter < known and not (allow_older or accept_rollback):
+    if known is None or counter < known:
+        accepted.append("counter")
+    if known is not None and counter < known and not (allow_older or accept_counter_rollback):
         raise BackupError(f"older backup refused: counter {counter} < known counter {known} "
                           "(pass allow_older to override)")
     revoked = set(payload["revoked"])
     if live_revoked_log is not None and Path(live_revoked_log).exists():
         revoked |= _parse_revoked(Path(live_revoked_log).read_text())
-    elif not accept_rollback:
+    elif not accept_lost_revocations:
         raise BackupError("no live revoked list supplied: devices revoked after this backup would be re-activated. "
-                          "Pass live_revoked_log, or accept_rollback if none survives")
+                          "Pass live_revoked_log, or accept_lost_revocations if none survives")
+    else:
+        accepted.append("revocations")
     part = dest.with_name(dest.name + ".partial")
     if part.exists():
         shutil.rmtree(part)
@@ -222,17 +244,24 @@ def restore(path: str | Path, dest_dir: str | Path, backup_pub: bytes, backup_se
         part.mkdir(parents=True, mode=0o700)
         entries = payload["audit"]
         _atomic_write(part / "audit.jsonl", "".join(json.dumps(e, sort_keys=True) + "\n" for e in entries).encode())
+        st = dict(payload["state"])
         if entries:
             last = entries[-1]
             _atomic_write(part / "audit.head", json.dumps({"seq": last["seq"], "hash": last["hash"], "sig": last["sig"]}).encode())
+        if accepted:
+            from .audit import AuditLog
+            alog = AuditLog(part / "audit.jsonl", key_sec, service_pub)
+            alog.append(time.time(), "restore.rollback_accepted", "operator",
+                        {"unchecked": accepted, "backup_counter": counter, "known_counter": known})
+            entries = alog.entries
+            st["applied"], st["audit_head"] = len(entries), alog.head
         _atomic_write(part / "server_sign.pub", service_pub, 0o644)
         _atomic_write(part / "server_sign.key", key_raw, 0o600)
         for h, b64 in payload["blobs"].items():
             bp = part / "blobs" / h[:2] / h
             bp.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
             _atomic_write(bp, c.b64d(b64))
-        st = dict(payload["state"])
-        st["_sig"] = c.b64e(c.sign(key_sec, "state", c.canonical(payload["state"])))
+        st["_sig"] = c.b64e(c.sign(key_sec, "state", c.canonical({k: v for k, v in st.items()})))
         _atomic_write(part / "state.json", json.dumps(st, sort_keys=True).encode())
         stamp = payload.get("_created", 0.0)
         _atomic_write(part / "revoked.log", "".join(f"{d}\t{stamp:.3f}\n" for d in sorted(revoked)).encode())
