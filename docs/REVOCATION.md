@@ -22,8 +22,9 @@ This is a simulation of the replication logic. It is not a deployment, and the t
    no longer re-sign history, so their cost does not grow with the number of rotations. Replicas do not add read
    throughput in this single-process simulation. Each node keeps its own audit log (a replica writes its own
    `access.granted` entries).
-6. A replica never removes a device from its revoked set. Installing a snapshot, replaying a certificate, restarting
-   or restoring an old directory copy cannot shrink it (the set is only ever unioned, and a pull restores it).
+6. A running replica never removes a device from its revoked set: installing a snapshot or replaying a certificate
+   only adds. Restoring an old copy of a replica directory does make that node forget, but it then has no sync time,
+   so it fails closed (lease) until it pulls, and the pull restores the revocation.
 
 ## Attacks and the result
 
@@ -50,6 +51,9 @@ This is a simulation of the replication logic. It is not a deployment, and the t
   device that was revoked during the partition. This is the price of serving reads during a short outage.
 * A malicious or compromised replica can ignore revocations for clients that talk only to it. Server-side enforcement
   cannot fix that. A client that needs protection from it must also ask a second node.
+* The lease uses a monotonic clock inside the node, so a wall-clock step does not extend or shorten it.
+* A demoted admin stays proven in a client's pins, because admin proofs carry no freshness or revocation. Abusing that
+  needs a colluding former admin and a malicious service.
 * A device that was revoked has already decrypted what it read. Rotation protects the next version, not the past.
 * A lost-device notice written by the primary is trusted. A compromised primary signing key breaks the whole scheme.
 * The nodes share one process and one clock source in the simulation. Clock skew between real hosts is bounded by the

@@ -117,7 +117,7 @@ def test_rotation_cutoff_enforced_by_every_node(tmp_path):
     for cert in cl.primary.all_certs():
         cl.nodes["node-c"].apply_cert(cert, cl.primary.pub)
     cl.nodes["node-c"].clock = lambda t0=time.time(): t0 + GRACE_S + 5
-    cl.nodes["node-c"].last_sync = cl.nodes["node-c"].clock()      # this test is about the epoch floor, not the lease
+    cl.nodes["node-c"].last_sync = cl.mono()      # this test is about the epoch floor, not the lease
     cl.nodes["node-c"].epoch_floor["report"] = (2, time.time() - GRACE_S - 10)
     assert code(Client(bob, cl.nodes["node-c"].handle, lambda: time.time() + GRACE_S + 5, "node-c").fetch,
                 "report", False) == "stale_replica"
@@ -146,7 +146,7 @@ def test_partitioned_replica_fails_closed_after_lease(tmp_path):
     now[0] += 1
     cl.bus.partitioned.add("node-b")
     assert cl.client(alice, "node-b").fetch("f", auto_rotate=False) == b"x"        # inside lease
-    now[0] += LEASE_S + 1
+    cl.skew += LEASE_S + 1
     assert code(cl.client(alice, "node-b").fetch, "f", False) == "node_stale"      # outside lease
 
 

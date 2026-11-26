@@ -61,10 +61,11 @@ class Cluster:
         self._base_clock = clock
         self.skew = 0.0                       # tests move every node's clock together by changing this
         self.clock = lambda: self._base_clock() + self.skew
+        self.mono = lambda: time.monotonic() + self.skew
         self.bus = bus or Bus()
         self.primary = GuardService(base / "node-a", clock=self.clock, name="node-a")
         self.nodes: dict[str, GuardService] = {
-            r: GuardService(base / r, clock=self.clock, name=r, read_only=True, lease_s=LEASE_S) for r in replicas
+            r: GuardService(base / r, clock=self.clock, name=r, read_only=True, lease_s=LEASE_S, mono=self.mono) for r in replicas
         }
         self.enforced_at: dict[tuple[str, str], float] = {}
         self.cert_seq: dict[str, int] = {}    # per replica: highest certificate sequence already applied
@@ -91,7 +92,7 @@ class Cluster:
         """Simulate a replica process restart: state is reloaded from disk and the last-sync time is forgotten,
         so the node fails closed (when partitioned) until it has pulled from the primary again."""
         old = self.nodes[node]
-        self.nodes[node] = GuardService(old.dir, clock=self.clock, name=node, read_only=True, lease_s=LEASE_S)
+        self.nodes[node] = GuardService(old.dir, clock=self.clock, name=node, read_only=True, lease_s=LEASE_S, mono=self.mono)
         self.cert_seq.pop(node, None)
         return self.nodes[node]
 
@@ -146,7 +147,7 @@ class Cluster:
         for cert in self.primary.all_certs(after_seq=self.cert_seq.get(node, -1)):
             self._apply(node, cert)
         self.cert_seq[node] = upto
-        n.last_sync = self.clock()
+        n.last_sync = self.mono()
 
     def _apply(self, node: str, cert: dict[str, Any]) -> str:
         r = self.nodes[node].apply_cert(cert, self.primary.pub)

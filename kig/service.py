@@ -94,8 +94,10 @@ def hmac_compare(a: str, b: str) -> bool:
 
 class GuardService:
     def __init__(self, data_dir: str | Path, clock: Callable[[], float] = time.time,
-                 name: str = "primary", read_only: bool = False, lease_s: float | None = None):
+                 name: str = "primary", read_only: bool = False, lease_s: float | None = None,
+                 mono: Callable[[], float] = time.monotonic):
         self.name = name
+        self.mono = mono                           # the lease uses a monotonic clock, so a wall-clock step cannot matter
         self.lease_s = lease_s                     # replicas: refuse everything if not confirmed fresh this recently
         self.last_sync: float | None = None        # when this replica last confirmed it is current with the primary
         self._cert_cache: dict[int, list[dict[str, Any]]] = {}
@@ -447,7 +449,7 @@ class GuardService:
     def _handle(self, env: dict[str, Any]) -> dict[str, Any]:
         now = self.clock()
         self._roll(now)
-        if self.read_only and self.lease_s is not None and (self.last_sync is None or now - self.last_sync > self.lease_s):
+        if self.read_only and self.lease_s is not None and (self.last_sync is None or self.mono() - self.last_sync > self.lease_s):
             # the lease lives in the node: a replica that cannot show it is current refuses everyone (fail closed),
             # including right after a restart, until its first successful sync
             raise Denied("node_stale", "replica cannot confirm revocation state; failing closed", 503)
