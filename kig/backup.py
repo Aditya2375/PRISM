@@ -256,8 +256,9 @@ def restore(path: str | Path, dest_dir: str | Path, backup_pub: bytes, backup_se
             last = entries[-1]
             _atomic_write(part / "audit.head", json.dumps({"seq": last["seq"], "hash": last["hash"], "sig": last["sig"]}).encode())
         # every restore is recorded and bumps the restore generation replicas compare snapshots by
-        gen = max(int(st.get("restore_generation", 0)),
-                  _generation(live_dir) if live_dir else 0) + 1
+        # wall-clock milliseconds keep it increasing even for a repeated restore without live_dir
+        gen = max(int(st.get("restore_generation", 0)), _generation(live_dir) if live_dir else 0,
+                  int(time.time() * 1000)) + 1
         st["restore_generation"] = gen
         from .audit import AuditLog
         alog = AuditLog(part / "audit.jsonl", key_sec, service_pub)

@@ -201,3 +201,13 @@ def test_bad_proxy_hops_fails_at_startup(tmp_path, monkeypatch):
     monkeypatch.setenv("KIG_PROXY_HOPS", "0")
     with pytest.raises(ValueError):
         create_app(tmp_path / "d", trust_proxy=True)
+
+
+def test_restoring_the_same_backup_twice_advances_the_generation(w, tmp_path, bk):
+    out, pub, sec = bk
+    d = tmp_path / "data"
+    gens = []
+    for name in ("r1", "r2"):
+        b.restore(out, tmp_path / name, pub, sec, d / "server_sign.pub", d / "server_sign.key", accept_rollback=True)
+        gens.append(GuardService(tmp_path / name, clock=w.clock).state["restore_generation"])
+    assert gens[1] > gens[0]
