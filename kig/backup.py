@@ -10,10 +10,10 @@ Format (JSON): ``{"v":1,"manifest":{...},"kem_ct":..,"blob":..,"sig":..}``
 * Restore verifies signature, decryption tag, payload hash, audit chain and state
   consistency BEFORE writing anything, and only into an empty directory. Any
   failure raises ``BackupError`` and leaves the target untouched.
-* Revocations newer than the backup are never lost: pass the live ``revoked.log``
-  and it is merged into the restored state (union only).
+* Revocations newer than the backup are only kept if the operator supplies the live
+  ``revoked.log`` (merged union-only) or explicitly accepts the rollback; see ``restore``.
 * Each backup carries a monotonic counter; restoring one older than the live
-  counter is refused unless ``allow_older`` is set.
+  known counter (``min_counter`` or ``live_dir``) is refused unless the operator overrides.
 """
 from __future__ import annotations
 
@@ -142,45 +142,110 @@ def verify_and_open(path: str | Path, backup_pub: bytes, backup_sec: bytes,
         raise BackupError("payload blobs are malformed") from None
     if len(entries) != manifest["audit_len"] or (entries and entries[-1]["hash"] != manifest["audit_head"]):
         raise BackupError("audit length or head does not match manifest")
-    if state.get("applied", 0) > len(entries):
-        raise BackupError("state is ahead of the audit log")
     if not isinstance(manifest.get("counter"), int) or manifest["counter"] < 1:
         raise BackupError("manifest has no valid monotonic counter")
+    n = state.get("applied", 0)
+    if not isinstance(n, int) or n < 0 or n > len(entries):
+        raise BackupError("state is ahead of the audit log")
+    if n and entries[n - 1]["hash"] != state.get("audit_head"):
+        raise BackupError("state does not match the audit log head it claims")
     payload["_counter"] = manifest["counter"]
+    payload["_created"] = manifest.get("created", 0.0)
     return payload
+
+
+def _read_service_key(path: str | Path, service_pub: bytes) -> tuple[bytes, bytes]:
+    """Return (raw file bytes, usable secret). Opens a passphrase-sealed key and checks it matches the public key."""
+    raw = Path(path).read_bytes()
+    try:
+        sec = vault.open_(raw, vault.passphrase_from_env(), "prism/server-key") if vault.is_sealed(raw) else raw
+        probe = b"prism/restore-key-check"
+        ok = c.verify(service_pub, "restore-check", probe, c.sign(sec, "restore-check", probe))
+    except vault.VaultError as e:
+        raise BackupError(f"service key cannot be opened: {e}") from None
+    except Exception:  # noqa: BLE001
+        raise BackupError("service key file is not a valid key") from None
+    if not ok:
+        raise BackupError("service key does not match the service public key")
+    return raw, sec
+
+
+def _parse_revoked(text: str) -> set[str]:
+    good = text.rfind("\n") + 1                 # ignore a torn, unterminated last line
+    return {l.split("\t")[0].strip() for l in text[:good].split("\n") if l.strip()}
 
 
 def restore(path: str | Path, dest_dir: str | Path, backup_pub: bytes, backup_sec: bytes,
             service_pub_path: str | Path, service_key_path: str | Path,
             live_revoked_log: str | Path | None = None, live_dir: str | Path | None = None,
-            allow_older: bool = False) -> dict[str, Any]:
-    """Verify, then write a fresh data directory. Returns a short report."""
+            allow_older: bool = False, min_counter: int | None = None,
+            accept_rollback: bool = False) -> dict[str, Any]:
+    """Verify everything, build the new directory aside, then move it into place.
+
+    Two guards stop a stale backup from undoing later security decisions, and each needs
+    either evidence or an explicit decision from the operator:
+
+    * counter: pass ``min_counter`` (the highest backup counter you know of, written down when
+      backups are made) or ``live_dir`` (a surviving data directory), else ``allow_older`` or
+      ``accept_rollback``. A backup below the known counter is refused.
+    * revocations: pass ``live_revoked_log`` (a surviving revoked.log, merged union-only) or
+      ``accept_rollback``. Without either, devices revoked after the backup would come back.
+
+    Nothing is written to ``dest_dir`` until every check has passed; a failure leaves no residue.
+    """
+    import shutil
+
     dest = Path(dest_dir)
     if dest.exists() and any(dest.iterdir()):
         raise BackupError("destination is not empty; refusing to overwrite")
     service_pub = Path(service_pub_path).read_bytes()
+    key_raw, key_sec = _read_service_key(service_key_path, service_pub)
     payload = verify_and_open(path, backup_pub, backup_sec, service_pub)
-    counter = payload_counter = payload.get("_counter", 0)
-    if live_dir is not None and not allow_older and _counter(live_dir) > payload_counter:
-        raise BackupError(f"older backup refused: counter {payload_counter} < live counter "
-                          f"{_counter(live_dir)} (pass allow_older to override)")
+    counter = payload["_counter"]
+    known = max([x for x in (min_counter, _counter(live_dir) if live_dir else None) if x is not None], default=None)
+    if known is None and not (allow_older or accept_rollback):
+        raise BackupError("cannot judge how old this backup is: pass min_counter (highest known backup counter), "
+                          "live_dir, or accept_rollback")
+    if known is not None and counter < known and not (allow_older or accept_rollback):
+        raise BackupError(f"older backup refused: counter {counter} < known counter {known} "
+                          "(pass allow_older to override)")
     revoked = set(payload["revoked"])
-    if live_revoked_log and Path(live_revoked_log).exists():
-        for line in Path(live_revoked_log).read_text().splitlines():
-            if line.strip():
-                revoked.add(line.split("\t")[0])
-    dest.mkdir(parents=True, exist_ok=True)
-    (dest / "audit.jsonl").write_text("".join(json.dumps(e, sort_keys=True) + "\n" for e in payload["audit"]))
-    os.chmod(dest / "audit.jsonl", 0o600)
-    _atomic_write(dest / "server_sign.pub", service_pub, 0o644)
-    _atomic_write(dest / "server_sign.key", Path(service_key_path).read_bytes(), 0o600)
-    st = dict(payload["state"])
-    st["_sig"] = c.b64e(c.sign(Path(service_key_path).read_bytes(), "state", c.canonical(payload["state"])))
-    for h, b64 in payload["blobs"].items():
-        bp = dest / "blobs" / h[:2] / h
-        bp.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-        _atomic_write(bp, c.b64d(b64))
-    _atomic_write(dest / "state.json", json.dumps(st, sort_keys=True).encode())
-    _atomic_write(dest / "revoked.log", "".join(f"{d}\t0\n" for d in sorted(revoked)).encode())
-    _atomic_write(dest / "backup.counter", str(max(counter, _counter(live_dir) if live_dir else 0)).encode())
-    return {"audit_entries": len(payload["audit"]), "revoked": sorted(revoked), "counter": counter}
+    if live_revoked_log is not None and Path(live_revoked_log).exists():
+        revoked |= _parse_revoked(Path(live_revoked_log).read_text())
+    elif not accept_rollback:
+        raise BackupError("no live revoked list supplied: devices revoked after this backup would be re-activated. "
+                          "Pass live_revoked_log, or accept_rollback if none survives")
+    part = dest.with_name(dest.name + ".partial")
+    if part.exists():
+        shutil.rmtree(part)
+    try:
+        part.mkdir(parents=True, mode=0o700)
+        entries = payload["audit"]
+        _atomic_write(part / "audit.jsonl", "".join(json.dumps(e, sort_keys=True) + "\n" for e in entries).encode())
+        if entries:
+            last = entries[-1]
+            _atomic_write(part / "audit.head", json.dumps({"seq": last["seq"], "hash": last["hash"], "sig": last["sig"]}).encode())
+        _atomic_write(part / "server_sign.pub", service_pub, 0o644)
+        _atomic_write(part / "server_sign.key", key_raw, 0o600)
+        for h, b64 in payload["blobs"].items():
+            bp = part / "blobs" / h[:2] / h
+            bp.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+            _atomic_write(bp, c.b64d(b64))
+        st = dict(payload["state"])
+        st["_sig"] = c.b64e(c.sign(key_sec, "state", c.canonical(payload["state"])))
+        _atomic_write(part / "state.json", json.dumps(st, sort_keys=True).encode())
+        stamp = payload.get("_created", 0.0)
+        _atomic_write(part / "revoked.log", "".join(f"{d}\t{stamp:.3f}\n" for d in sorted(revoked)).encode())
+        _atomic_write(part / "backup.counter", str(max(counter, known or 0)).encode())
+        if dest.exists():
+            dest.rmdir()
+        os.rename(part, dest)
+        dfd = os.open(dest.parent, os.O_RDONLY)
+        try:
+            os.fsync(dfd)
+        finally:
+            os.close(dfd)
+    except BaseException:
+        shutil.rmtree(part, ignore_errors=True)
+        raise
+    return {"audit_entries": len(entries), "revoked": sorted(revoked), "counter": counter}

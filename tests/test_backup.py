@@ -22,6 +22,8 @@ def bk(w, tmp_path):
 def do_restore(w, tmp_path, bk, dest="restored", **kw):
     out, pub, sec = bk
     d = tmp_path / "data"
+    kw.setdefault("accept_rollback", True)
+    kw.setdefault("min_counter", 1)
     return b.restore(out, tmp_path / dest, pub, sec, d / "server_sign.pub", d / "server_sign.key", **kw)
 
 
@@ -76,7 +78,7 @@ def test_signed_by_other_service_rejected(w, tmp_path, bk):
 
 def test_revocation_newer_than_backup_is_not_lost(w, tmp_path, bk):
     w.admin.call("revoke_device", device="alice-phone")        # after the backup was taken
-    do_restore(w, tmp_path, bk, live_revoked_log=tmp_path / "data" / "revoked.log")
+    do_restore(w, tmp_path, bk, live_revoked_log=tmp_path / "data" / "revoked.log", accept_rollback=False)
     svc2 = GuardService(tmp_path / "restored", clock=w.clock)
     assert svc2.state["devices"]["alice-phone"]["status"] != "active"
     assert "alice-phone" not in svc2.state["files"]["report"]["wraps"]
