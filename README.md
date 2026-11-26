@@ -200,7 +200,7 @@ A browser cannot make ML-DSA signatures, so a page for an ordinary device holder
 
 ## Web console
 
-A small original React app in `web/` gives an operator console (alerts with device, user, node and event; devices; files; the signed audit log with a chain check) and a device-holder view (upload, download, enrol, report lost). It is a client of the API below and holds no keys. To run it with demo data: `bash web/run_demo.sh` (Node 20 or newer), then open http://localhost:4173. Limits and licence notes: `web/README.md`.
+The primary console is `web-p3/`: a React app in the red design contributed by Abhishek, wired to the real API (no sample data). It has an operator console (alerts with device, user, node, event and source; devices; files; the signed audit log with a chain check) and a device-holder view (upload, download, enrol, report lost). It holds no keys. To run it with demo data: `bash web-p3/run_demo.sh` (Node 20 or newer), then open http://localhost:4173. Limits and credits: `web-p3/README.md`. `web/` is an earlier, independent console in a graphite design, kept as a fallback (`bash web/run_demo.sh`).
 
 ## Detection rules
 

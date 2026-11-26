@@ -14,6 +14,7 @@ export default function UserDash({ api, onSignOut }) {
   const [activity, setActivity] = useState([]);
   const [msg, setMsg] = useState({ kind: "", text: "" });
   const [confirm, setConfirm] = useState(null);
+  const closeConfirm = useCallback(() => setConfirm(null), []);
   const fileInput = useRef(null);
   const [name, setName] = useState("");
   const [share, setShare] = useState("");
@@ -141,8 +142,8 @@ export default function UserDash({ api, onSignOut }) {
     <Shell nav={nav} page={page} setPage={setPage} role={me?.role === "admin" ? "Device holder, admin" : "Device holder"} who={me ? me.user : ""} onSignOut={onSignOut} live="Connected to your local backend" toast={msg.kind === "good" ? msg.text : ""}>
       {msg.kind === "err" && me && <p className="ad-note err" role="alert">{msg.text}</p>}
       {body}
-      {confirm && <Modal title={confirm.title} close={() => setConfirm(null)}><p className="ad-modal-copy">{confirm.text}</p>
-        <footer><button onClick={() => setConfirm(null)}>Cancel</button><button className="ad-danger" onClick={confirm.go}>{confirm.label}</button></footer></Modal>}
+      {confirm && <Modal title={confirm.title} close={closeConfirm}><p className="ad-modal-copy">{confirm.text}</p>
+        <footer><button data-autofocus onClick={() => setConfirm(null)}>Cancel</button><button className="ad-danger" onClick={confirm.go}>{confirm.label}</button></footer></Modal>}
     </Shell>
   );
 }

@@ -29,7 +29,7 @@ $K get --url $U $R --key asha-phone.json --file-id payroll-2026 --out p.out >/de
 $K call --url $U $R --key asha-laptop.json report_lost '{"device":"asha-phone","reason":"left in a taxi"}' >/dev/null
 $K get --url $U $R --key asha-phone.json --file-id payroll-2026 --out p.out >/dev/null 2>&1 || true
 $K get --url $U $R --key ravi-laptop.json --file-id payroll-2026 --out r.out >/dev/null
-(cd "$ROOT/web-p3" && npx vite preview --port $WEB --strictPort >"$D/web.log" 2>&1) & pids+=($!)
+(cd "$ROOT/web-p3" && npx vite preview --port $WEB --strictPort --bypass-lock >"$D/web.log" 2>&1) & pids+=($!)
 KIG_CORS_ORIGINS="http://localhost:$WEB" python -m kig.webapi --key asha-laptop.json --url $U $R --port 8788 >wa.log 2>&1 & pids+=($!)
 sleep 3
 echo

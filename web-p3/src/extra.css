@@ -8,15 +8,15 @@
 .ad-stat.hot strong{color:#e07b78}
 .ad-ident{display:grid;grid-template-columns:repeat(5,1fr);gap:1px;background:#222;border:1px solid #222;border-radius:4px;margin:10px 0;overflow:hidden}
 .ad-ident div{background:#0c0c0c;padding:8px 10px;min-width:0}
-.ad-ident dt{font:9px monospace;color:#858382;letter-spacing:.07em;text-transform:uppercase}
+.ad-ident dt{font:9px monospace;color:#9b9895;letter-spacing:.07em;text-transform:uppercase}
 .ad-ident dd{margin-top:4px;font:11px monospace;color:#ddd;overflow-wrap:anywhere}
-.ad-ident dd.dim{color:#777}
+.ad-ident dd.dim{color:#9a9794}
 .ad-alert-card{border:1px solid #2c2020;border-left:3px solid #d54441;border-radius:6px;background:#0f0b0b;padding:14px;margin-bottom:12px}
 .ad-alert-card.high{border-left-color:#cf9255;border-color:#2c2519;background:#0e0c09}
 .ad-alert-card header{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
 .ad-alert-card p{margin:10px 0;line-height:1.55;font-size:12px;color:#cfcbc8}
-.ad-alert-card small{color:#858382}
-.ad-empty{color:#858382;padding:18px 4px;font-size:12px}
+.ad-alert-card small{color:#9b9895}
+.ad-empty{color:#9b9895;padding:18px 4px;font-size:12px}
 .ad-mono{font-family:monospace}
 .ad-table-wrap tr.hl td{background:#150e0e}
 .ad-table-wrap td .ad-row-btn{margin-right:6px;padding:5px 9px;border:1px solid #333;border-radius:4px;background:#141414;color:#ccc;cursor:pointer;font-size:11px}
@@ -35,3 +35,12 @@
 @media (max-width:900px){.ad-menu{display:inline-block}}
 .ad-pill.critical i,.ad-pill.lost i,.ad-pill.blocked i{background:#d54441}
 .ad-pill.high i,.ad-pill.needs-re-key i,.ad-pill.warn i{background:#cf9255}
+.selection-back{margin-top:22px;display:flex;justify-content:center}
+.selection-back button{padding:9px 18px;border:1px solid #333;border-radius:6px;background:#141414;color:#cdcbca;cursor:pointer;font-size:13px}
+.selection-back button:hover{border-color:#8e302e}
+.selection-icon{display:grid;place-items:center;height:34px}
+.selection-icon .ad-icon-svg{width:28px;height:28px}
+.ad-x{display:grid;place-items:center}
+.ad-modal button:focus-visible,.selection-card:focus-visible,.selection-back button:focus-visible{outline:2px solid #d54441;outline-offset:2px}
+.selection-options{align-items:stretch}
+.selection-card{justify-content:flex-start}
