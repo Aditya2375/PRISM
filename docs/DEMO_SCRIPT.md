@@ -15,7 +15,7 @@ Point at these lines as they appear:
 * Step 2: the phone is reported lost. The reply lists `payroll-2026` as needing a new key.
 * Step 3: someone holding the phone sends a validly signed request. Result: `denied: revoked (device is lost)`.
 * Step 4: Ravi's next read re-keys the file automatically. The epoch goes to 1 and the wrapped keys list only
-  the laptops.
+  the laptops. (This is the library demo, `python -m kig.demo`. With the command line `kig get` a read does not re-key; run `kig rotate-pending` from an owner or admin device, as the web demo recording does.)
 * Step 5: a critical alert, R1, with the audit entry numbers as evidence. `audit chain verifies: True`.
 
 Say: "Keys never leave a device unwrapped. The server stores ciphertext and per-device wrapped keys only."

@@ -98,7 +98,7 @@ def metrics() -> Table:
     lab = ParagraphStyle("lab", fontName="Helvetica", fontSize=6.9, leading=8.3, textColor=MUTED)
     cells = [("0.0", "false alerts per 1,000 benign requests (1,265 replayed)"),
              ("F1 0.80", "precision 1.00, recall 0.67 over 9 labelled scenarios, 3 of them missed on purpose"),
-             ("35 to 50 ms", "revocation to the last of 3 real node processes; loopback, one clock"),
+             ("about 35 ms", "revocation to the last of 3 real node processes; loopback, one clock, one machine"),
              ("30 s | 0 | lease", "grace: rotation | revoked device | cut-off replica (2 s real, 5 s simulated)")]
     t = Table([[Paragraph(a, big) for a, _ in cells], [Paragraph(b, lab) for _, b in cells]], colWidths=[43.5 * mm] * 4)
     t.setStyle(TableStyle([("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#f2f6fa")), ("LINEAFTER", (0, 0), (-2, -1), 0.6, colors.white),
@@ -137,7 +137,7 @@ def page1(video: str) -> list:
                "previous version get a <b>30 s grace</b>, only for devices still eligible; then the node answers <i>key_version_retired</i>."))
     f.append(B("<b>Revocation across nodes.</b> Grace for a revoked device is <b>zero</b>. A replica cut off from the primary can still serve a lost "
                "device until its lease ends (2 s in the real-process harness, 5 s in the in-process simulation), then answers <i>node_stale</i>. "
-               "Measured on one machine with three real processes: the last node refused the device after a median of 35 to 50 ms across our runs "
+               "Measured on one machine with three real processes: the last node refused the device after about 35 ms on the machine we measured "
                "(<i>python -m kig.netcluster</i>). That is loopback and one clock, not a network figure."))
     f.append(B("<b>Powerful devices.</b> A phone is enrolled <i>limited</i> and always acts as a plain member. Removing an admin's device or "
                "disabling an admin needs another admin whose device is at least 15 minutes old. Deleted file ids keep a tombstone."))
