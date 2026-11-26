@@ -213,3 +213,21 @@ reader's key check, but it does not sign a hash of the ciphertext itself. Withou
 without persistence) pins last only as long as the Client object. Files without a manifest are refused. The frozen
 fixtures hold throwaway private keys on purpose.
 
+
+## Standalone verifier
+
+`verifier/prism_verify.py` checks evidence without the service and without importing any of its code (a test checks
+the imports). It needs Python and the `cryptography` package, reads files only and needs no private key:
+
+```
+python verifier/prism_verify.py audit  --log data/audit.jsonl --pub data/server_sign.pub --anchor data/audit.head [--expect-head HASH]
+python verifier/prism_verify.py backup --file x.bak --pub data/server_sign.pub
+python verifier/prism_verify.py state  --file data/state.json --pub data/server_sign.pub
+```
+
+`audit` re-derives every entry hash and checks every signature, the links, the sequence and the head anchor, and
+refuses to pass without an anchor. `backup` checks the manifest signature, the signed blob list and every blob's
+hash, without the backup key (it does not open the sealed metadata). `state` checks the signed snapshot. It does not
+check that the journal after the snapshot is complete (the service does that at start-up). Tail removal can only be
+excluded with a head or anchor recorded outside the directory. The format rules are written out a second time in
+this file from the docs, which is the point: a bug in the service's own checker cannot hide a bad log.

@@ -30,7 +30,7 @@ python -m pytest -q            # the full suite
 ```
 
 * Revocation, replicas and what is simulated: `docs/REVOCATION.md`.
-* Storage, journal, backup and the signed manifest: `docs/CORE.md`.
+* Storage, journal, backup, the signed manifest and the standalone verifier (`verifier/prism_verify.py`): `docs/CORE.md`.
 * Cryptography, known-answer tests, naming: `docs/CRYPTO.md`.
 * Assets, attackers and limits: `THREAT_MODEL.md`. Reporting a problem: `SECURITY.md`.
 
@@ -125,6 +125,7 @@ kig/cluster.py   primary + two replicas, signed revocation certificates, lease
 kig/doctor.py    read-only directory checker
 kig/bench.py     measured cost at several sizes
 kig/demo.py      the lost-device story
+verifier/        standalone audit, backup and state verifier (no kig imports)
 kig/detect.py    explainable rules
 kig/service.py   identity directory, access decisions, revocation, recovery
 kig/client.py    device-side crypto and request signing
