@@ -4,7 +4,11 @@ import Limits from "./Limits";
 import { clip, fingerprintGroups, labelFor, when } from "./format";
 import { toBase64 } from "./api";
 
-const MAX_BYTES = 4 * 1024 * 1024;
+// The local app accepts 4 MB. The hosted review copy puts a 64 KB cap on each request body, and base64 adds a third,
+// so it can take about 45 KB of file; 40 KB leaves room for the name and the access list.
+const HOSTED = import.meta.env.VITE_PRISM_SAME_ORIGIN === "1";
+const MAX_BYTES = HOSTED ? 40 * 1024 : 4 * 1024 * 1024;
+const MAX_LABEL = HOSTED ? "40 KB (the hosted review copy)" : "4 MB";
 
 export default function UserDash({ api, onSignOut }) {
   const [page, setPage] = useState("overview");
@@ -35,7 +39,7 @@ export default function UserDash({ api, onSignOut }) {
   async function upload() {
     const f = fileInput.current?.files?.[0];
     if (!f || !name.trim()) return setMsg({ kind: "err", text: "Choose a file and give it a name." });
-    if (f.size > MAX_BYTES) return setMsg({ kind: "err", text: "That file is over 4 MB, the limit of this screen." });
+    if (f.size > MAX_BYTES) return setMsg({ kind: "err", text: `That file is over ${MAX_LABEL}, the limit of this screen.` });
     try {
       const bytes = new Uint8Array(await f.arrayBuffer());
       await api.post("/files", { file_id: name.trim(), acl: share.split(",").map((s) => s.trim()).filter(Boolean), content_b64: toBase64(bytes) });

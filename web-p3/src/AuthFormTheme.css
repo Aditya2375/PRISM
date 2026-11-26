@@ -54,7 +54,7 @@
   margin: 7px 0 19px;
   color: #858382;
   text-align: center;
-  font-size: 10px;
+  font-size: 12px;
 }
 
 .login-card form {
@@ -98,7 +98,7 @@
 .login-card .error-message {
   margin-top: 0;
   color: #D41514 !important;
-  font-size: 10px;
+  font-size: 12px;
 }
 
 .login-card .login-button {
