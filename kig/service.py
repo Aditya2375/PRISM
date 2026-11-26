@@ -99,6 +99,7 @@ class GuardService:
         self._reconcile()
         self._recover_rotations()
         self._enforce_revoked()
+        self._gc_blobs()
         if self.audit.recovered_torn_bytes:
             self._log("service.recovered", "service", {"dropped_torn_bytes": self.audit.recovered_torn_bytes})
             self._persist()
@@ -519,11 +520,54 @@ class GuardService:
 
     # files ------------------------------------------------------------------
 
-    def _check_blob(self, ct_b64: Any) -> str:
+    # ------------------------------------------------ ciphertext blob store
+    # Ciphertext lives in content-addressed files (blobs/xx/<sha256>), written and fsynced
+    # before the state commit that references them. state.json then stays small, and a
+    # blob is verified against its hash on every read.
+
+    def _blob_path(self, h: str) -> Path:
+        return self.dir / "blobs" / h[:2] / h
+
+    def _store_blob(self, raw: bytes) -> str:
+        h = c.sha256_hex(raw)
+        p = self._blob_path(h)
+        if not p.exists():
+            p.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+            _atomic_write(p, raw)
+        return h
+
+    def _load_blob(self, h: str) -> str:
+        try:
+            raw = self._blob_path(h).read_bytes()
+        except OSError:
+            raw = b""
+        if not raw or c.sha256_hex(raw) != h:
+            self._log("storage.corrupt", "service", {"blob": h})
+            raise Denied("storage_corrupt", "stored ciphertext is missing or failed its hash check", 500)
+        return c.b64e(raw)
+
+    def blob_hashes(self) -> set[str]:
+        out = set()
+        for f in self.state["files"].values():
+            out.add(f["ct"])
+            if f.get("prev"):
+                out.add(f["prev"]["ct"])
+        return out
+
+    def _gc_blobs(self) -> None:
+        keep = self.blob_hashes()
+        root = self.dir / "blobs"
+        if not root.exists():
+            return
+        for sub in root.iterdir():
+            for p in sub.iterdir():
+                if p.name not in keep:
+                    p.unlink(missing_ok=True)
+
+    def _check_blob(self, ct_b64: Any) -> bytes:
         if not isinstance(ct_b64, str) or len(ct_b64) > MAX_FILE_BYTES * 4 // 3 + 64:
             raise Denied("bad_request", "ciphertext missing or too large", 400)
-        c.b64d(ct_b64)
-        return ct_b64
+        return c.b64d(ct_b64)
 
     def _check_wraps(self, wraps: Any, acl: list[str]) -> dict[str, Any]:
         want = set(self.eligible_devices(acl))
@@ -552,10 +596,10 @@ class GuardService:
         acl = self._acl(args, user)
         if user not in acl:
             raise Denied("bad_request", "creator must be in acl", 400)
-        ct = self._check_blob(args.get("ciphertext"))
+        ct = self._store_blob(self._check_blob(args.get("ciphertext")))
         wraps = self._check_wraps(args.get("wraps"), acl)
         self.state["files"][fid] = {
-            "owner": user, "acl": acl, "epoch": 1, "ciphertext": ct,
+            "owner": user, "acl": acl, "epoch": 1, "ct": ct,
             "wraps": wraps, "needs_rotation": False, "prev": None,
         }
         self._log("file.created", dev, {"file": fid, "owner": user, "acl": acl, "epoch": 1})
@@ -590,7 +634,7 @@ class GuardService:
                                               "action": "fetch", "why": "no key wrapped for this device"},
                        "forbidden", "no key available for this device")
         self._log("access.granted", dev, {"device": dev, "user": user, "file": fid, "epoch": f["epoch"]})
-        return {"file_id": fid, "epoch": f["epoch"], "ciphertext": f["ciphertext"], "wrap": wrap,
+        return {"file_id": fid, "epoch": f["epoch"], "ciphertext": self._load_blob(f["ct"]), "wrap": wrap,
                 "acl": f["acl"], "needs_rotation": f["needs_rotation"]}
 
     def _fetch_previous(self, dev, user, fid, f, want):
@@ -613,7 +657,7 @@ class GuardService:
                        "forbidden", "no key available for this device")
         self._log("access.granted_grace", dev, {"device": dev, "user": user, "file": fid, "epoch": want,
                                                 "age_s": round(age, 1)})
-        return {"file_id": fid, "epoch": want, "ciphertext": prev["ciphertext"], "wrap": wrap,
+        return {"file_id": fid, "epoch": want, "ciphertext": self._load_blob(prev["ct"]), "wrap": wrap,
                 "acl": f["acl"], "needs_rotation": True, "grace_remaining_s": round(GRACE_S - age, 1)}
 
     def cmd_rotate(self, dev, user, role, args):
@@ -634,21 +678,25 @@ class GuardService:
             acl = self._acl(args, user)
             if f["owner"] not in acl and role != "admin":
                 raise Denied("bad_request", "owner must stay in acl", 400)
-        ct = self._check_blob(args.get("ciphertext"))
+        ct_raw = self._check_blob(args.get("ciphertext"))
         wraps = self._check_wraps(args.get("wraps"), acl)
         old_acl = f["acl"]
+        ct = self._store_blob(ct_raw)             # durable before the state commit references it
+        dropped = f["prev"]["ct"] if f.get("prev") else None
         self._crash("rotate_before_prepare")
         # Journal prepare, apply and persist, then journal commit. Recovery reads the pair.
         self._log("file.rotate_prepared", dev, {"file": fid, "from_epoch": f["epoch"], "to_epoch": f["epoch"] + 1})
         self._crash("rotate_after_prepare")
         # Keep the old version for in-flight readers, only for devices that stay eligible.
-        f["prev"] = {"epoch": f["epoch"], "ciphertext": f["ciphertext"], "rotated_at": self.clock(),
+        f["prev"] = {"epoch": f["epoch"], "ct": f["ct"], "rotated_at": self.clock(),
                      "wraps": {d: w for d, w in f["wraps"].items() if d in wraps}}
-        f.update(acl=acl, ciphertext=ct, wraps=wraps, epoch=f["epoch"] + 1, needs_rotation=False)
+        f.update(acl=acl, ct=ct, wraps=wraps, epoch=f["epoch"] + 1, needs_rotation=False)
         self._persist()
         self._crash("rotate_mid_commit")
         self._log("file.rotated", dev, {"file": fid, "epoch": f["epoch"], "by": user,
                                         "acl_changed": acl != old_acl})
+        if dropped and dropped not in self.blob_hashes():
+            self._blob_path(dropped).unlink(missing_ok=True)
         self._crash("rotate_after_commit")
         return {"ok": True, "epoch": f["epoch"]}
 
@@ -701,9 +749,12 @@ class GuardService:
         with self._lock:
             return self.certs_from_entries(self.audit.entries)
 
-    def export_snapshot(self) -> dict[str, Any]:
+    def export_snapshot(self, have: set[str] | frozenset[str] = frozenset()) -> dict[str, Any]:
+        """Signed state plus only the ciphertext blobs the caller does not already hold."""
         with self._lock:
-            body = {"state": json.loads(json.dumps(self.state)), "version": len(self.audit.entries)}
+            blobs = {h: self._load_blob(h) for h in self.blob_hashes() - set(have)}
+            body = {"state": json.loads(json.dumps(self.state)), "version": len(self.audit.entries),
+                    "blobs": blobs}
             return {"body": body, "sig": c.b64e(c.sign(self._sec, "snapshot", c.canonical(body)))}
 
     def install_snapshot(self, snap: dict[str, Any], primary_pub: bytes) -> bool:
@@ -713,7 +764,15 @@ class GuardService:
                 raise Denied("bad_signature", "snapshot signature invalid", 400)
             if snap["body"]["version"] <= self.snapshot_version:
                 return False
+            for h, b64 in snap["body"].get("blobs", {}).items():
+                raw = c.b64d(b64)
+                if c.sha256_hex(raw) != h:
+                    raise Denied("bad_snapshot", "snapshot blob does not match its hash", 400)
+                self._store_blob(raw)
             self.state = json.loads(json.dumps(snap["body"]["state"]))
+            missing = [h for h in self.blob_hashes() if not self._blob_path(h).exists()]
+            if missing:
+                raise Denied("bad_snapshot", "snapshot references blobs that were not supplied", 400)
             self.snapshot_version = snap["body"]["version"]
             self._enforce_revoked()
             self._persist()

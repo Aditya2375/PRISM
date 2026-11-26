@@ -56,7 +56,7 @@ def test_old_wrap_cannot_decrypt_new_epoch(w):
     old = w.svc.state["files"]["report"]["wraps"]["alice-phone"]
     w.admin.call("revoke_device", device="alice-phone")
     w.admin.fetch("report")  # rotates
-    new_ct = c.b64d(w.svc.state["files"]["report"]["ciphertext"])
+    new_ct = c.b64d(w.svc._load_blob(w.svc.state["files"]["report"]["ct"]))
     phone = Client(w.alice_phone, w.svc.handle, w.clock)
     dek_old = phone._unwrap(old, "report", 1)
     try:
@@ -259,7 +259,7 @@ def test_client_detects_version_rollback(w):
     assert w.bob.fetch("report", auto_rotate=False) == b"top secret payroll"
     f = w.svc.state["files"]["report"]
     f["epoch"] = 1                                   # a malicious server serves the old version again
-    f["wraps"] = f["prev"]["wraps"]; f["ciphertext"] = f["prev"]["ciphertext"]
+    f["wraps"] = f["prev"]["wraps"]; f["ct"] = f["prev"]["ct"]
     from kig import crypto as c
     with pytest.raises(c.CryptoError, match="rollback"):
         w.bob.fetch("report", auto_rotate=False)
@@ -271,3 +271,25 @@ def test_torn_revoked_log_line_is_ignored(w, tmp_path):
         fh.write("alice-lap")                         # torn, never acknowledged
     svc2 = GuardService(tmp_path / "data", clock=w.clock)
     assert svc2.revoked == {"bob-laptop"}
+
+
+def test_ciphertext_blobs_are_content_addressed_verified_and_collected(w, tmp_path):
+    f = w.svc.state["files"]["report"]
+    assert "ciphertext" not in f and len(f["ct"]) == 64
+    assert (tmp_path / "data" / "blobs" / f["ct"][:2] / f["ct"]).exists()
+    assert len((tmp_path / "data" / "state.json").read_bytes()) < 40000
+    w.admin.rotate("report")
+    w.admin.rotate("report")
+    blobs = [p for p in (tmp_path / "data" / "blobs").rglob("*") if p.is_file()]
+    assert len(blobs) == 2                      # current + previous only; older ones removed
+    # silent bit rot or tampering on disk fails closed and is logged
+    cur = tmp_path / "data" / "blobs" / w.svc.state["files"]["report"]["ct"][:2] / w.svc.state["files"]["report"]["ct"]
+    cur.write_bytes(cur.read_bytes()[:-1] + b"\x00")
+    assert code(w.bob.fetch, "report", False) == "storage_corrupt"
+    assert any(e["type"] == "storage.corrupt" for e in w.svc.audit.entries)
+
+
+def test_orphan_blob_from_a_crash_is_collected_on_restart(w, tmp_path):
+    w.svc._store_blob(b"orphan bytes from an interrupted put")
+    GuardService(tmp_path / "data", clock=w.clock)
+    assert len([p for p in (tmp_path / "data" / "blobs").rglob("*") if p.is_file()]) == 1

@@ -70,6 +70,7 @@ def create(svc: GuardService, backup_pub: bytes, out_path: str | Path) -> dict[s
             "state": json.loads(json.dumps(svc.state)),
             "audit": list(svc.audit.entries),
             "revoked": sorted(svc.revoked),
+            "blobs": {h: svc._load_blob(h) for h in sorted(svc.blob_hashes())},
         }
         raw = c.canonical(payload)
         manifest = {
@@ -127,6 +128,18 @@ def verify_and_open(path: str | Path, backup_pub: bytes, backup_sec: bytes,
     ok, why = verify_chain(entries, service_pub)
     if not ok:
         raise BackupError(f"audit chain in backup is invalid: {why}")
+    try:
+        blobs = payload["blobs"]
+        for h, b64 in blobs.items():
+            if c.sha256_hex(c.b64d(b64)) != h:
+                raise BackupError(f"blob {h[:12]} does not match its hash")
+        need = {f["ct"] for f in state["files"].values()} | {f["prev"]["ct"] for f in state["files"].values() if f.get("prev")}
+        if need - set(blobs):
+            raise BackupError("backup is missing ciphertext blobs referenced by state")
+    except BackupError:
+        raise
+    except Exception:  # noqa: BLE001
+        raise BackupError("payload blobs are malformed") from None
     if len(entries) != manifest["audit_len"] or (entries and entries[-1]["hash"] != manifest["audit_head"]):
         raise BackupError("audit length or head does not match manifest")
     if state.get("applied", 0) > len(entries):
@@ -163,6 +176,10 @@ def restore(path: str | Path, dest_dir: str | Path, backup_pub: bytes, backup_se
     _atomic_write(dest / "server_sign.key", Path(service_key_path).read_bytes(), 0o600)
     st = dict(payload["state"])
     st["_sig"] = c.b64e(c.sign(Path(service_key_path).read_bytes(), "state", c.canonical(payload["state"])))
+    for h, b64 in payload["blobs"].items():
+        bp = dest / "blobs" / h[:2] / h
+        bp.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        _atomic_write(bp, c.b64d(b64))
     _atomic_write(dest / "state.json", json.dumps(st, sort_keys=True).encode())
     _atomic_write(dest / "revoked.log", "".join(f"{d}\t0\n" for d in sorted(revoked)).encode())
     _atomic_write(dest / "backup.counter", str(max(counter, _counter(live_dir) if live_dir else 0)).encode())

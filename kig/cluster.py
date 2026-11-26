@@ -122,16 +122,13 @@ class Cluster:
 
     # -- replication ---------------------------------------------------------
     def sync_all(self) -> None:
-        snap = self.primary.export_snapshot()
-        for n in self.nodes.values():
-            n.install_snapshot(snap, self.primary.pub)
         for name in self.nodes:
             self.pull(name)
 
     def pull(self, node: str) -> None:
         """Catch-up path for a node that missed pushes (partition healed, restart)."""
         n = self.nodes[node]
-        n.install_snapshot(self.primary.export_snapshot(), self.primary.pub)
+        n.install_snapshot(self.primary.export_snapshot(have=n.blob_hashes()), self.primary.pub)
         for cert in self.primary.all_certs():
             self._apply(node, cert)
         self.last_sync[node] = self.clock()
@@ -147,11 +144,11 @@ class Cluster:
         n0 = len(self.primary.audit.entries)
         result = self.primary.handle(env, source)
         certs = self.primary.certs_from_entries(self.primary.audit.entries[n0:])
-        snap = self.primary.export_snapshot()
         for name, node in self.nodes.items():
             for cert in certs:
                 self.bus.send(name, lambda node=name, cert=cert: self._apply(node, cert))
-            self.bus.send(name, lambda node=node: node.install_snapshot(snap, self.primary.pub))
+            self.bus.send(name, lambda node=node: node.install_snapshot(
+                self.primary.export_snapshot(have=node.blob_hashes()), self.primary.pub))
         self.primary_ack_at = self.clock()
         return result
 
