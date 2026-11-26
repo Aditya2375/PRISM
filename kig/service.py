@@ -1390,22 +1390,29 @@ class GuardService:
         return bool(isinstance(h, str) and len(h) == 64 and all(ch in "0123456789abcdef" for ch in h)
                     and self._blob_path(h).exists())
 
-    def read_blobs(self, hashes: list[str], max_bytes: int) -> dict[str, str]:
-        """Primary: some of the requested blobs (base64) up to about ``max_bytes`` of ciphertext, at least one.
-        Only blobs the current state refers to are served, so this cannot read other files."""
+    def read_blobs(self, hashes: list[str], max_bytes: int) -> tuple[dict[str, str], list[str]]:
+        """Primary: some of the requested blobs (base64) up to about ``max_bytes`` of ciphertext, at least one if any is
+        available, and the list of requested hashes that are no longer part of the current state ("gone": the caller
+        should fetch a newer snapshot). Only blobs of the current state are served, so this cannot read other files."""
         with self._lock:
             allowed = self.blob_hashes()
             out: dict[str, str] = {}
+            gone: list[str] = []
             total = 0
+            full = False
             for h in hashes:
                 if h not in allowed:
-                    raise Denied("unknown_blob", "that blob is not part of the current state", 404)
+                    gone.append(h)
+                    continue
+                if full:
+                    continue
                 b64 = self._load_blob(h)
                 if out and total + len(b64) * 3 // 4 > max_bytes:
-                    break
+                    full = True
+                    continue
                 out[h] = b64
                 total += len(b64) * 3 // 4
-            return out
+            return out, gone
 
     def store_synced_blob(self, h: str, b64: str) -> None:
         """Replica: keep a blob fetched from the primary, only if its hash is the one asked for."""
@@ -1471,6 +1478,7 @@ class GuardService:
                 self.state, self.snapshot_version, self.snapshot_generation = old_state, old_ver, old_gen
                 self.store.force_snapshot = True
                 raise
+            self._gc_blobs()               # deleted files and superseded versions must not stay on a replica's disk
             return True
 
     def apply_cert(self, cert: dict[str, Any], primary_pub: bytes) -> str:

@@ -92,6 +92,10 @@ Honest limits of this version:
   (CPU and memory cost) and can read the sync data.
 * A primary restored from an older backup under the same restore generation leaves replicas ahead of it; they refuse to
   refresh their lease until the operator restores with a new generation or rebuilds the replicas.
+* After each snapshot a replica deletes ciphertext that its new state no longer refers to, so deleted files and
+  superseded versions do not stay on its disk (`test_o1_replicas_delete_ciphertext_of_deleted_files_and_old_versions`).
+  If files change while a replica is copying blobs, the primary reports the blobs that left its state and the replica starts
+  again from a newer snapshot (up to 4 tries, then `churn`) (`test_o2_blob_that_left_the_state_is_reported_as_gone_and_the_pull_recovers`).
 * A replica that cannot sync reports the reason in `/node/status` and prints a JSON line on stderr (`sync_failing`);
   there is no alerting beyond that. Client requests are not relayed, so a partition test cuts only the sync links.
 

@@ -279,11 +279,12 @@ def test_blob_pages_are_capped_and_only_serve_blobs_of_the_current_state(nc, bos
     refs = sorted({f["ct"] for f in state["body"]["state"]["files"].values()})
     code, out = http("POST", nc.url["node-a"] + "/sync/blobs", nc.token, {"hashes": refs, "max_bytes": 1_500_000})
     assert code == 200 and 1 <= len(out["blobs"]) < len(refs)                 # capped: not all three in one reply
-    code, out = http("POST", nc.url["node-a"] + "/sync/blobs", nc.token, {"hashes": ["0" * 64], "max_bytes": 10})
-    assert code == 404
-    for bad in ({"hashes": [], "max_bytes": 5}, {"hashes": [1], "max_bytes": 5}, {"hashes": ["a"], "max_bytes": True},
-                {"hashes": ["../../etc/passwd"], "max_bytes": 5}):
-        assert http("POST", nc.url["node-a"] + "/sync/blobs", nc.token, bad)[0] in (400, 404)
+    code, out = http("POST", nc.url["node-a"] + "/sync/blobs", nc.token, {"hashes": ["0" * 64, refs[0]], "max_bytes": 10})
+    assert code == 200 and out["gone"] == ["0" * 64] and list(out["blobs"]) == [refs[0]]   # unknown hashes are reported, not fatal
+    for bad in ({"hashes": [], "max_bytes": 5}, {"hashes": [1], "max_bytes": 5}, {"hashes": ["a"], "max_bytes": True}):
+        assert http("POST", nc.url["node-a"] + "/sync/blobs", nc.token, bad)[0] == 400
+    out = http("POST", nc.url["node-a"] + "/sync/blobs", nc.token, {"hashes": ["../../etc/passwd"], "max_bytes": 5})[1]
+    assert out["blobs"] == {} and out["gone"] == ["../../etc/passwd"]          # never used as a path
 
 
 def test_n2_a_lease_is_not_refreshed_unless_the_node_reached_the_signed_position(tmp_path, boss, monkeypatch):
@@ -404,3 +405,58 @@ def test_token_file_must_be_private_and_a_replica_cannot_bootstrap(tmp_path):
     with pytest.raises(SystemExit):
         main(["--role", "replica", "--name", "n", "--data", str(tmp_path / "d"), "--port", "1", "--cluster-token-file", str(f),
               "--primary-url", "http://127.0.0.1:1", "--primary-pub", str(f), "--bootstrap", "u:d:x"])
+
+
+def _blob_count(nc, node):
+    root = nc.base / node / "blobs"
+    return sum(1 for p in root.rglob("*") if p.is_file()) if root.exists() else 0
+
+
+def test_o1_replicas_delete_ciphertext_of_deleted_files_and_old_versions(nc, boss):
+    admin = nc.client(boss)
+    admin.put_file("doc", b"x" * 300_000, acl=["ops"])
+    nc.wait_synced()
+    assert until(lambda: _blob_count(nc, "node-b") == 1 and _blob_count(nc, "node-c") == 1)
+    admin.call("delete_file", file_id="doc")
+    nc.wait_synced()
+    assert until(lambda: _blob_count(nc, "node-a") == 0 and _blob_count(nc, "node-b") == 0 and _blob_count(nc, "node-c") == 0)
+    admin.put_file("doc2", b"y" * 100_000, acl=["ops"])
+    for _ in range(2):
+        admin.rotate("doc2")                                   # keeps the current and one previous version only
+    nc.wait_synced()
+    want = _blob_count(nc, "node-a")
+    assert until(lambda: _blob_count(nc, "node-b") == want and _blob_count(nc, "node-c") == want)
+    assert nc.client(boss, "node-b").fetch("doc2", auto_rotate=False) == b"y" * 100_000
+
+
+def test_o2_blob_that_left_the_state_is_reported_as_gone_and_the_pull_recovers(nc, boss, monkeypatch):
+    import kig.node as kn
+    from kig.service import GuardService
+    admin = nc.client(boss)
+    admin.put_file("doc", b"one" * 1000, acl=["ops"])
+    pub = (nc.base / "node-a" / "server_sign.pub").read_bytes()
+    rep = GuardService(nc.base / "probe3", name="probe3", read_only=True, lease_s=2.0)
+    node = kn.Node(rep, "replica", nc.token, primary_url=nc.url["node-a"], primary_pub=pub)
+    real = kn._http
+    moved = {"done": False}
+
+    def churn(method, url, token, body=None, timeout=2.0):
+        if "/sync/blobs" in url and not moved["done"]:
+            moved["done"] = True
+            admin.rotate("doc")   # the state moves under the pull
+            admin.put_file("other", b"three" * 1000, acl=["ops"])
+            admin.call("delete_file", file_id="doc")
+        return real(method, url, token, body, timeout)
+
+    monkeypatch.setattr(kn, "_http", churn)
+    node.pull()                                                 # first snapshot is stale; the node starts over and succeeds
+    assert moved["done"] and rep.last_sync is not None
+    assert "doc" not in rep.state["files"] and "other" in rep.state["files"]
+
+
+def test_a_recovered_peer_loses_its_old_error_in_status(nc, boss):
+    nc.cut("node-c")
+    nc.client(boss).call("create_user", user="late", role="member")
+    assert until(lambda: nc.status("node-a")["errors"], timeout=10)            # the primary cannot push to node-c
+    nc.heal("node-c")
+    assert until(lambda: not nc.status("node-a")["errors"], timeout=10)

@@ -162,6 +162,7 @@ class Node:
                 start = self.acked[peer] + 1
                 upto = min(head, start + self.cert_page - 1)
                 if upto < start:
+                    self.last_error.pop(peer, None)
                     return
                 certs = svc.certs_from_entries(svc.audit.entries[start:upto + 1])
             _http("POST", peer + "/sync/push", self.token, {"certs": certs, "upto": upto})
@@ -213,27 +214,39 @@ class Node:
             self.last_error.pop("primary", None)
 
     def _install_snapshot(self) -> None:
-        """Signed state first, then the missing blobs in pages of about PAGE_BYTES, each checked against its hash."""
+        """Signed state first, then the missing blobs in pages of about PAGE_BYTES, each checked against its hash.
+        If the primary says a blob left its state meanwhile (files changed again), start over from a newer snapshot."""
         n = self.svc
-        snap = _http("POST", self.primary_url + "/sync/snapshot", self.token, {"have": [], "meta": True}, timeout=10.0)
-        try:
-            refs = n.blob_refs(snap["body"]["state"])
-        except (KeyError, TypeError, AttributeError):
-            raise Denied("bad_snapshot", "malformed snapshot", 400) from None
-        if not c.verify(self.primary_pub, "snapshot", c.canonical(snap["body"]), c.b64d(snap["sig"])):
-            raise Denied("bad_signature", "snapshot signature invalid", 400)   # before any blob is fetched
-        missing = sorted(h for h in refs if not n.has_blob(h))
-        while missing:
-            page = _http("POST", self.primary_url + "/sync/blobs", self.token,
-                         {"hashes": missing[:64], "max_bytes": PAGE_BYTES}, timeout=10.0)["blobs"]
-            if not isinstance(page, dict) or not page:
-                raise Denied("bad_snapshot", "empty blob page", 400)
-            for h, b64 in page.items():
-                if h not in refs:
-                    raise Denied("bad_snapshot", "blob that the signed state does not refer to", 400)
-                n.store_synced_blob(h, b64)
-            missing = [h for h in missing if not n.has_blob(h)]
-        n.install_snapshot(snap, self.primary_pub)
+        for _attempt in range(4):
+            snap = _http("POST", self.primary_url + "/sync/snapshot", self.token, {"have": [], "meta": True}, timeout=10.0)
+            try:
+                refs = n.blob_refs(snap["body"]["state"])
+            except (KeyError, TypeError, AttributeError):
+                raise Denied("bad_snapshot", "malformed snapshot", 400) from None
+            if not c.verify(self.primary_pub, "snapshot", c.canonical(snap["body"]), c.b64d(snap["sig"])):
+                raise Denied("bad_signature", "snapshot signature invalid", 400)   # before any blob is fetched
+            missing = sorted(h for h in refs if not n.has_blob(h))
+            restart = False
+            while missing and not restart:
+                reply = _http("POST", self.primary_url + "/sync/blobs", self.token,
+                              {"hashes": missing[:64], "max_bytes": PAGE_BYTES}, timeout=10.0)
+                page, gone = reply["blobs"], reply.get("gone", [])
+                if not isinstance(page, dict) or not isinstance(gone, list):
+                    raise Denied("bad_snapshot", "malformed blob page", 400)
+                for h, b64 in page.items():
+                    if h not in refs:
+                        raise Denied("bad_snapshot", "blob that the signed state does not refer to", 400)
+                    n.store_synced_blob(h, b64)
+                if gone:
+                    restart = True
+                elif not page:
+                    raise Denied("bad_snapshot", "empty blob page", 400)
+                missing = [h for h in missing if not n.has_blob(h)]
+            if restart:
+                continue
+            n.install_snapshot(snap, self.primary_pub)
+            return
+        raise Denied("churn", "the primary's files changed faster than this node could copy them", 503)
 
     def apply_pushed(self, certs: list[dict[str, Any]]) -> int:
         """A pushed certificate counts only if it verifies against the pinned primary key. It never refreshes the lease."""
@@ -309,7 +322,8 @@ def create_node_app(data_dir: str | Path, role: str, name: str, token: str, peer
                     raise ValueError
             except (ValueError, KeyError, TypeError, RecursionError):
                 raise Denied("bad_request", "hashes must be a list of 1 to 256 blob hashes and max_bytes an integer", 400) from None
-            return {"blobs": svc.read_blobs(hashes, max(1, min(cap, PAGE_BYTES)))}
+            got, gone = svc.read_blobs(hashes, max(1, min(cap, PAGE_BYTES)))
+            return {"blobs": got, "gone": gone}
     else:
         @app.post("/sync/push")
         async def push(request: Request, x_kig_cluster_token: str = Header(default="")) -> dict[str, Any]:
