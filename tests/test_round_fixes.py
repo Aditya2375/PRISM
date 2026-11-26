@@ -479,3 +479,52 @@ def test_w1_admin_made_by_an_admin_can_enrol_devices(tmp_path):
     cl = Client(adm, svc.handle)
     cl.put_file("f", b"x", acl=["adm"])
     assert Client(dave, svc.handle).fetch("f") == b"x"
+
+
+def test_i6_recovered_admin_works_for_existing_clients_after_pin_root(tmp_path):
+    svc, adm = boot(tmp_path / "d")
+    ac, bob = member(svc, adm)
+    ac = Client(adm, svc.handle, state_path=tmp_path / "adm.state")
+    ac.put_file("shared", b"hello bob", acl=["adm", "bob"])
+    bc = Client(bob, svc.handle)
+    assert bc.fetch("shared") == b"hello bob"                     # both pinned adm-1 as the root
+    new = Device.generate("adm-new", "adm")
+    fp = svc.recover_admin("adm", "adm-new", new.sign_pub, new.kem_pub)
+    assert svc.state["files"]["shared"]["needs_rotation"] is True
+    ac.fetch("shared")                                             # auto-rotation wraps for the new device: refused until pinned
+    assert ac.rotation_errors and svc.state["files"]["shared"]["needs_rotation"] is True
+    ac.add_root(fp)                                                # operator told the admin the fingerprint, out of band
+    ac.fetch("shared")
+    assert svc.state["files"]["shared"]["needs_rotation"] is False
+    nc = Client(new, svc.handle, roots=[adm.fingerprint(), fp])
+    assert nc.fetch("shared") == b"hello bob"
+    assert fp in json.loads((tmp_path / "adm.state.pins").read_text())["roots"]       # pin survives restarts
+
+
+def test_pin_root_rejects_garbage():
+    cl = Client(Device.generate("d", "u"), lambda e: {})
+    for bad in ("", "zz", "x" * 40, "ab"):
+        with pytest.raises(c.CryptoError):
+            cl.add_root(bad)
+
+
+def test_i5_first_use_pin_requires_our_own_chain_to_verify(tmp_path):
+    svc, adm = boot(tmp_path / "d")
+    ac, bob = member(svc, adm)
+    evil_root = Device.generate("evil-root", "adm")
+    bad_proof = Client(evil_root, lambda e: {}).envelope("enroll_device", bob.public_args())
+    bad_proof["sig"] = c.b64e(b"\x00" * 64)                         # not a real signature
+
+    def transport(env, source="local"):
+        out = svc.handle(env, source)
+        if env["cmd"] == "directory":
+            out = {"devices": {"bob-1": {"user": "bob", "sign_pub": c.b64e(bob.sign_pub), "kem_pub": c.b64e(bob.kem_pub),
+                                          "status": "active", "proof": bad_proof, "role_proof": None},
+                               "evil-root": {"user": "adm", "sign_pub": c.b64e(evil_root.sign_pub),
+                                             "kem_pub": c.b64e(evil_root.kem_pub), "status": "active", "proof": None,
+                                             "role_proof": None}}}
+        return out
+    bc = Client(bob, transport)
+    with pytest.raises(c.CryptoError):
+        bc._ensure_roots()
+    assert not bc.pins.get("roots")

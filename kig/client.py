@@ -262,11 +262,21 @@ class Client:
 
     # -- root of trust ---------------------------------------------------------
     def _root_list(self) -> list[str]:
-        if self._roots:
-            return self._roots
-        if self.pins.get("roots"):
-            return self.pins["roots"]
-        return []
+        out = list(self._roots or [])
+        out += [r for r in self.pins.get("roots", []) if r not in out]
+        return out
+
+    def add_root(self, fingerprint: str) -> None:
+        """Pin one more root device (for example the device an operator enrolled by offline recovery). The fingerprint
+        must come from the operator out of band, never from the server."""
+        fp = fingerprint.strip().lower()
+        if not 20 <= len(fp) <= 128 or not all(ch in "0123456789abcdef-" for ch in fp):
+            raise c.CryptoError("that does not look like a device fingerprint")
+        roots = self.pins.setdefault("roots", [])
+        if fp not in roots:
+            roots.append(fp)
+            self._save_pins()
+        self._trusted.clear(); self._admin_users.clear()
 
     @staticmethod
     def _env_body(env: dict[str, Any]) -> dict[str, Any]:
@@ -368,7 +378,13 @@ class Client:
             cur = e["proof"].get("device")
         if not roots:
             raise c.CryptoError("could not find the root behind this device's enrolment")
-        self.pins["roots"] = roots
+        self.pins["roots"] = roots                     # tentative: our own chain must verify against it
+        self._trusted.clear(); self._admin_users.clear()
+        try:
+            self._prove(self.dev.device_id, dirm)
+        except c.CryptoError:
+            self.pins["roots"] = []
+            raise
         self._save_pins()
 
     def _check_devices(self, devs: dict[str, str]) -> None:

@@ -75,6 +75,9 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--user", required=True)
     p.add_argument("--device", required=True, help="new device id (never used before)")
     p.add_argument("--out", required=True, help="where to write the new device key file")
+    p = sub.add_parser("pin-root", help="pin one more root device fingerprint in this device's trust record (read it from the operator)")
+    p.add_argument("--key", required=True)
+    p.add_argument("--fingerprint", required=True)
     p = sub.add_parser("doctor", help="check a data directory: state, audit chain, blobs, permissions")
     p.add_argument("--data", required=True)
     p = sub.add_parser("enroll", help="enrol a new device from its public-key JSON, after comparing its fingerprint")
@@ -156,7 +159,16 @@ def main(argv: list[str] | None = None) -> int:
         print(f"enrolled new device {a.device} for admin {a.user}; key file {a.out}; fingerprint {fp}")
         roots = svc.root_fingerprints()
         print("clients must pin these roots (--root-fingerprint): " + ", ".join(roots + [fp]))
+        print(f"existing clients: run `kig pin-root --key KEYFILE --fingerprint {fp}` (the fingerprint must reach them out of band)")
         print("every file this user can read is flagged for re-keying; record this action: it is in the audit log as an operator action", file=sys.stderr)
+        return 0
+    if a.op == "pin-root":
+        try:
+            Client(Device.load(a.key), lambda env: {}, state_path=str(a.key) + ".state").add_root(a.fingerprint)
+        except (c.CryptoError, OSError, vault.VaultError) as e:
+            print(f"refused: {e}", file=sys.stderr)
+            return 2
+        print("pinned")
         return 0
     if a.op == "doctor":
         from .doctor import run
