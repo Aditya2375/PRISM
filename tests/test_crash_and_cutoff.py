@@ -81,11 +81,22 @@ def test_revoked_set_is_enforced_when_state_is_restored_from_old_signed_copy(w, 
     old = (d / "state.json").read_text()                        # valid, signed, but before the revoke
     w.admin.call("revoke_device", device="alice-phone")
     (d / "state.json").write_text(old)
-    lines = (d / "audit.jsonl").read_text().splitlines()
-    n = next(i for i, l in enumerate(lines) if json.loads(l)["type"] == "device.revoked")
-    (d / "audit.jsonl").write_text("\n".join(lines[:n]) + "\n")   # audit also rolled back
     svc2 = restart(w, tmp_path)
     assert svc2.state["devices"]["alice-phone"]["status"] != "active"
+
+
+def test_rolling_back_state_and_audit_together_is_refused_at_start(w, tmp_path):
+    import pytest
+    from kig.audit import AuditError
+    d = tmp_path / "data"
+    old = (d / "state.json").read_text()
+    w.admin.call("revoke_device", device="alice-phone")
+    (d / "state.json").write_text(old)
+    lines = (d / "audit.jsonl").read_text().splitlines()
+    n = next(i for i, l in enumerate(lines) if json.loads(l)["type"] == "device.revoked")
+    (d / "audit.jsonl").write_text("\n".join(lines[:n]) + "\n")   # audit also rolled back: head anchor disagrees
+    with pytest.raises(AuditError):
+        restart(w, tmp_path)
 
 
 def test_torn_audit_append_is_recovered(w, tmp_path):

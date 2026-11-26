@@ -83,10 +83,20 @@ class Detector:
                     f"A signed request from {d['device']} reused a nonce already seen. "
                     "The replay was denied.",
                     [seq],
-                    response=f"source {d.get('source')} locked {LOCKOUT_S}s",
+                    response="request denied; the sender is not locked out",
                     subject=d["device"],
-                    lock_key=f"{d['device']}@{d.get('source')}",
-                    lock_until=ts + LOCKOUT_S,
+                )
+            )
+        elif t == "auth.failures_suppressed":
+            alerts.append(
+                Alert(
+                    "R3-AUTH-FAILURE-BURST",
+                    "high",
+                    f"{d['count']} further failed or limited requests in minute {d['minute']} were counted but "
+                    "not logged one by one. Look at the earlier auth.* entries for the sources involved.",
+                    [seq],
+                    response="requests denied and rate limited; nobody is locked out",
+                    subject="unauthenticated",
                 )
             )
         elif t in ("auth.bad_signature", "auth.unknown_device"):
@@ -102,12 +112,10 @@ class Detector:
                         "R3-AUTH-FAILURE-BURST",
                         "high",
                         f"{len(hist)} failed authentications claiming '{key}' within "
-                        f"{BURST_WINDOW_S}s from one source. That device-and-source pair is locked for {LOCKOUT_S}s.",
+                        f"{BURST_WINDOW_S}s from one source. Requests were denied; nobody is locked out.",
                         [s for _, s in hist],
-                        response=f"locked {LOCKOUT_S}s",
+                        response="denied and rate limited",
                         subject=key.split("@")[0],
-                        lock_key=key,
-                        lock_until=ts + LOCKOUT_S,
                     )
                 )
                 self.failures[key] = []

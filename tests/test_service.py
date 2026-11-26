@@ -44,8 +44,10 @@ def test_lost_device_scenario(w):
     assert len(crit) == 1 and crit[0]["severity"] == "critical"
     lost_seq = next(e["seq"] for e in w.svc.audit.entries if e["type"] == "device.lost")
     assert lost_seq in crit[0]["evidence"]
-    # next legitimate fetch rotates the key automatically
+    # a member's fetch reads but cannot re-key; the next fetch by the owner or an admin does
     assert w.bob.fetch("report") == b"top secret payroll"
+    assert w.svc.state["files"]["report"]["needs_rotation"]
+    assert w.admin.fetch("report") == b"top secret payroll"
     f = w.svc.state["files"]["report"]
     assert f["epoch"] == 2 and not f["needs_rotation"]
     assert set(f["wraps"]) == {"alice-laptop", "bob-laptop"}
@@ -80,7 +82,7 @@ def test_replay_and_stale_and_bad_signature(w):
     assert code(w.svc.handle, forged) == "unauthorized"
 
 
-def test_auth_failure_burst_locks_identifier(w):
+def test_auth_failure_burst_alerts_but_never_locks_anyone_out(w):
     for _ in range(3):
         e = w.bob.envelope("fetch", {"file_id": "report"})
         e["sig"] = c.b64e(b"x" * 3309)
@@ -88,10 +90,8 @@ def test_auth_failure_burst_locks_identifier(w):
     burst = alerts(w, "R3-AUTH-FAILURE-BURST")
     assert len(burst) == 1 and len(burst[0]["evidence"]) == 3
     good = w.bob.envelope("fetch", {"file_id": "report"})
-    assert code(w.svc.handle, good, "attacker-ip") == "locked"
-    assert w.bob.fetch("report") == b"top secret payroll"  # real owner from elsewhere still works
-    w.clock.tick(301)
-    assert code(w.svc.handle, w.bob.envelope("fetch", {"file_id": "report"}), "attacker-ip") is None
+    assert code(w.svc.handle, good, "attacker-ip") is None          # same source, valid signature: served
+    assert w.bob.fetch("report") == b"top secret payroll"
 
 
 def test_unknown_device_cannot_do_anything(w):
@@ -206,24 +206,49 @@ def test_nan_and_bool_fields_rejected(w):
     assert code(w.admin.call, "rotate", file_id="report", expected_epoch=True, ciphertext="AA==", wraps={}) == "conflict"
 
 
-def test_lockout_floods_do_not_grow_the_audit_log(w):
-    for _ in range(3):
+def test_unauthenticated_floods_cannot_grow_the_audit_log(w):
+    n = len(w.svc.audit.entries)
+    for i in range(500):
         e = w.bob.envelope("fetch", {"file_id": "report"})
         e["sig"] = c.b64e(b"x" * 3309)
-        code(w.svc.handle, e, "atk")
+        e["device"] = f"ghost-{i}" if i % 2 else "bob-laptop"
+        code(w.svc.handle, e, f"10.0.0.{i % 200}")
+    assert len(w.svc.audit.entries) - n <= 80
+    w.clock.tick(61)
+    code(w.svc.handle, w.bob.envelope("whoami"), "x")                # next minute: one summary line
+    assert any(e["type"] == "auth.failures_suppressed" and e["data"]["count"] > 400 for e in w.svc.audit.entries)
+
+
+def test_identical_retry_is_refused_quietly_and_never_penalised(w):
+    env = w.bob.envelope("whoami")
+    w.svc.handle(env, "1.1.1.1")
     n = len(w.svc.audit.entries)
-    for _ in range(200):
-        code(w.svc.handle, w.bob.envelope("fetch", {"file_id": "report"}), "atk")
-    assert len(w.svc.audit.entries) == n + 1
+    assert code(w.svc.handle, copy.deepcopy(env), "1.1.1.1") == "replay"
+    assert len(w.svc.audit.entries) == n and not alerts(w, "R2-REPLAY")
+    assert w.svc.handle(w.bob.envelope("whoami"), "1.1.1.1")["user"] == "bob"
+    # the same envelope from a different address IS suspicious: logged and alerted, still not a lockout
+    assert code(w.svc.handle, copy.deepcopy(env), "6.6.6.6") == "replay"
+    assert alerts(w, "R2-REPLAY")
+    assert w.svc.handle(w.bob.envelope("whoami"), "6.6.6.6")["user"] == "bob"
 
 
-def test_repeat_revoked_use_dedupes_alerts_but_logs_every_attempt(w):
+def test_revoked_use_logs_are_bounded_but_alert_once(w):
     stolen = Client(w.alice_phone, w.svc.handle, w.clock)
     w.admin.call("report_lost", device="alice-phone")
-    for _ in range(5):
+    for _ in range(50):
         code(stolen.fetch, "report")
     assert len(alerts(w, "R1-REVOKED-DEVICE-USE")) == 1
-    assert sum(e["type"] == "auth.revoked_device_use" for e in w.svc.audit.entries) == 5
+    assert 1 <= sum(e["type"] == "auth.revoked_device_use" for e in w.svc.audit.entries) <= 3
+
+
+def test_per_device_rate_limit_is_silent_and_recovers(w):
+    from kig.service import DEVICE_RATE_PER_MIN
+    n = len(w.svc.audit.entries)
+    outcomes = [code(w.bob.call, "whoami") for _ in range(DEVICE_RATE_PER_MIN + 20)]
+    assert outcomes.count("rate_limited") >= 15
+    assert len(w.svc.audit.entries) == n
+    w.clock.tick(61)
+    assert w.bob.call("whoami")["user"] == "bob"
 
 
 def test_audit_truncation_detected_on_restart(w, tmp_path):

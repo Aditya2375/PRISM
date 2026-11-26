@@ -32,8 +32,11 @@ def _operator_token(data_dir: Path) -> str:
     return p.read_text().strip()
 
 
-def create_app(data_dir: str | Path, service: GuardService | None = None) -> FastAPI:
+def create_app(data_dir: str | Path, service: GuardService | None = None,
+               trust_proxy: bool | None = None) -> FastAPI:
     data_dir = Path(data_dir)
+    if trust_proxy is None:
+        trust_proxy = os.environ.get("KIG_TRUSTED_PROXY") == "1"
     svc = service or GuardService(data_dir)
     token = _operator_token(data_dir)
     app = FastAPI(title="Key Identity Guard", version="0.1.0", docs_url=None, redoc_url=None)
@@ -64,11 +67,14 @@ def create_app(data_dir: str | Path, service: GuardService | None = None) -> Fas
             import json
 
             env = json.loads(raw)
-        except ValueError:
+        except (ValueError, RecursionError):   # RecursionError: absurdly nested input
             raise Denied("bad_request", "invalid JSON", 400) from None
         if not isinstance(env, dict):
             raise Denied("bad_request", "envelope must be an object", 400)
         src = request.client.host if request.client else "unknown"
+        if trust_proxy:   # only behind a reverse proxy you control: first hop of X-Forwarded-For
+            fwd = request.headers.get("x-forwarded-for", "").split(",")[0].strip()
+            src = fwd[:64] or src
         return svc.handle(env, source=src)
 
     @app.get("/v1/overview", dependencies=[Depends(operator)])

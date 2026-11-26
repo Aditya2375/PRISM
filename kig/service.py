@@ -30,6 +30,12 @@ SKEW_S = 30
 GRACE_S = 30  # rotation cutoff: the previous key version stays readable this long for in-flight transfers
 MAX_FILE_BYTES = 5 * 1024 * 1024
 READ_ONLY_CMDS = {"fetch", "whoami", "eligible", "list_files"}
+MAX_FILES = 10_000                 # per service, bounds state size and write cost
+DEVICE_RATE_PER_MIN = 240          # authenticated requests per device per minute
+SOURCE_RATE_PER_MIN = 1200         # all requests per source address per minute
+UNAUTH_LOG_PER_SOURCE_MIN = 3      # signed audit lines for unauthenticated failures, per source per minute
+UNAUTH_LOG_TOTAL_MIN = 30          # ... and in total per minute; the rest are counted and summarised
+MUTATING_TYPES = {"user.created", "role.changed", "device.enrolled", "file.created", "service.bootstrapped"}
 ROLES = ("admin", "member")
 ID_CHARS = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_.")
 
@@ -84,22 +90,30 @@ class GuardService:
         self._load_server_key()
         self.revoked: set[str] = self._load_revoked()
         self.audit = AuditLog(self.dir / "audit.jsonl", self._sec, self.pub)
+        self._fresh = False
         self.state: dict[str, Any] = self._load_state()
         self._check_not_truncated()
         self.detector = Detector()
-        self.locks: dict[str, float] = {}
-        self.epoch_floor: dict[str, tuple[int, float]] = {}  # replica: newest epoch seen via signed certificate
-        self.snapshot_version = -1
-        self.nonces: dict[str, float] = {}
+        self.locks: dict[str, float] = {}  # kept for alert bookkeeping; authentication is never blocked by it
+        rep_state = self.state.get("_replica", {})
+        # replica bookkeeping is persisted inside the signed state so a restart cannot be used to roll it back
+        self.epoch_floor: dict[str, tuple[int, float]] = {k: (v[0], v[1]) for k, v in rep_state.get("epoch_floor", {}).items()}
+        self.snapshot_version: int = int(rep_state.get("snapshot_version", -1))
+        self.nonces: dict[str, tuple[float, str, str]] = {}   # nonce key -> (first seen, source, body hash)
         self._src = "local"
-        self._lock_logged: set[str] = set()
+        self._ua_minute = -1
+        self._ua_src: dict[str, int] = {}
+        self._ua_total = 0
+        self._ua_suppressed = 0
+        self._rate: dict[str, tuple[int, int]] = {}
         # Nonces are memory-only, so refuse anything signed before this process started.
         self.boot = self.clock()
         self._replay_detector()
         self._reconcile()
         self._recover_rotations()
         self._enforce_revoked()
-        self._gc_blobs()
+        if not self._fresh:
+            self._gc_blobs()               # only after a verified state load; never from an empty start
         if self.audit.recovered_torn_bytes:
             self._log("service.recovered", "service", {"dropped_torn_bytes": self.audit.recovered_torn_bytes})
             self._persist()
@@ -146,11 +160,16 @@ class GuardService:
         p = self.dir / "revoked.log"
         out: set[str] = set()
         if p.exists():
-            text = p.read_text()
-            lines = text.split("\n")
-            if lines and lines[-1] != "":
-                lines.pop()          # unterminated final line: a torn write that was never acknowledged
-            for line in lines:
+            raw = p.read_bytes()
+            good = raw.rfind(b"\n") + 1
+            if good != len(raw):
+                # torn tail from a crash mid-append (never acknowledged): cut it off so the
+                # next record cannot be glued onto it
+                with open(p, "r+b") as fh:
+                    fh.truncate(good)
+                    fh.flush()
+                    os.fsync(fh.fileno())
+            for line in raw[:good].decode("utf-8", "replace").split("\n"):
                 if line.strip():
                     out.add(line.strip().split("\t")[0])
         return out
@@ -189,6 +208,12 @@ class GuardService:
             if not c.verify(self.pub, "state", c.canonical(st), sig):
                 raise StateCorrupt("state.json failed its integrity signature; restore from a verified backup")
             return st
+        blobs = self.dir / "blobs"
+        leftovers = [x for x in (self.dir / "revoked.log", self.dir / "audit.jsonl") if x.exists() and x.stat().st_size]
+        if leftovers or self.revoked or self.audit.entries or (blobs.exists() and any(blobs.rglob("*"))):
+            raise StateCorrupt("state.json is missing but this directory holds service data; "
+                               "restore from a verified backup instead of starting empty")
+        self._fresh = True
         return {"users": {}, "devices": {}, "files": {}, "applied": 0}
 
     def _check_not_truncated(self) -> None:
@@ -199,6 +224,9 @@ class GuardService:
             raise AuditError("audit log does not match the head recorded in state")
 
     def _persist(self) -> None:
+        if self.read_only:
+            self.state["_replica"] = {"snapshot_version": self.snapshot_version,
+                                      "epoch_floor": {k: list(v) for k, v in self.epoch_floor.items()}}
         self.state["applied"] = len(self.audit.entries)
         self.state["audit_head"] = self.audit.head
         body = dict(self.state)
@@ -230,8 +258,11 @@ class GuardService:
                 for dev in self._devices_of(d["user"]):
                     changed |= self._apply_remove_device(dev, "revoked")
                 changed = True
-            elif e["type"] == "alert.raised" and d.get("lock_key"):
-                self.locks[d["lock_key"]] = d["lock_until"]
+        lost = [(e["seq"], e["type"]) for e in self.audit.entries[start:] if e["type"] in MUTATING_TYPES]
+        if lost:
+            # these were logged but the state write never happened and the client never got a success reply
+            self.audit.append(self.clock(), "recovery.unapplied", "service",
+                              {"seqs": [x[0] for x in lost], "types": sorted({x[1] for x in lost})})
         if changed or start != len(self.audit.entries):
             self._persist()
 
@@ -247,12 +278,6 @@ class GuardService:
 
     def _raise(self, a: Alert) -> None:
         data = a.as_data()
-        if a.lock_key:
-            self._lock_logged.discard(a.lock_key)
-            if len(self.locks) > 4096:
-                self.locks = {k: v for k, v in self.locks.items() if v > self.clock()}
-            self.locks[a.lock_key] = a.lock_until
-            data["lock_key"], data["lock_until"] = a.lock_key, a.lock_until
         self.audit.append(self.clock(), "alert.raised", "detector", data)
 
     def _devices_of(self, user: str) -> list[str]:
@@ -313,8 +338,8 @@ class GuardService:
         """Process one signed envelope. Returns a JSON-able dict or raises Denied.
 
         ``source`` is the network origin (the API passes the client address).
-        Lockouts are keyed by device AND source, so an attacker cannot lock a
-        victim out by sending garbage that claims the victim's device id.
+        Nothing an unauthenticated sender can do blocks a legitimate device: failures are
+        counted and rate limited, never turned into a lockout.
         """
         with self._lock:
             self._src = str(source)[:64]
@@ -326,7 +351,48 @@ class GuardService:
         self._log(etype, actor, data)
         raise Denied(code, reason)
 
+    # -- bounded logging and rate limits for traffic that has not earned an audit line ------------
+    def _roll(self, now: float) -> None:
+        minute = int(now // 60)
+        if minute == self._ua_minute:
+            return
+        if self._ua_suppressed and self._ua_minute >= 0:
+            self.audit.append(now, "auth.failures_suppressed", "service",
+                              {"minute": self._ua_minute, "count": self._ua_suppressed,
+                               "note": "failed, limited or retried requests beyond the per-minute logging budget"})
+        self._ua_minute, self._ua_src, self._ua_total, self._ua_suppressed = minute, {}, 0, 0
+        self._rate = {k: v for k, v in self._rate.items() if v[0] == minute}
+
+    def _rate_hit(self, key: str, limit: int, now: float) -> bool:
+        minute = int(now // 60)
+        m, n = self._rate.get(key, (minute, 0))
+        if m != minute:
+            m, n = minute, 0
+        n += 1
+        if len(self._rate) > 20_000 and key not in self._rate:
+            return False                       # table full: stop tracking rather than grow without bound
+        self._rate[key] = (m, n)
+        return n > limit
+
+    def _throttled(self, cls: str, key: str, etype: str, actor: str, data: dict[str, Any],
+                   code: str, reason: str) -> None:
+        """Log at most a few signed lines per key per minute and a bounded total; count the rest."""
+        k = f"{cls}|{key}"
+        n = self._ua_src.get(k, 0)
+        if n < UNAUTH_LOG_PER_SOURCE_MIN and self._ua_total < UNAUTH_LOG_TOTAL_MIN:
+            self._ua_src[k] = n + 1
+            self._ua_total += 1
+            self._log(etype, actor, dict(data, source=self._src))
+        else:
+            self._ua_suppressed += 1
+        raise Denied(code, reason)
+
     def _handle(self, env: dict[str, Any]) -> dict[str, Any]:
+        now = self.clock()
+        self._roll(now)
+        if self._rate_hit(f"src:{self._src}", SOURCE_RATE_PER_MIN, now):
+            self._ua_suppressed += 1
+            raise Denied("rate_limited", "too many requests from this source", 429)
         try:
             cmd, dev_id = env["cmd"], env["device"]
             ts, nonce, args = env["ts"], env["nonce"], env["args"]
@@ -337,51 +403,60 @@ class GuardService:
             if not (isinstance(cmd, str) and isinstance(dev_id, str) and isinstance(nonce, str)):
                 raise KeyError
             if (not isinstance(args, dict) or isinstance(ts, bool) or not isinstance(ts, (int, float))
-                    or not math.isfinite(ts)):
+                    or not math.isfinite(ts) or abs(ts) > 1e12):
                 raise KeyError
             if len(nonce) > 64 or len(dev_id) > 64:
                 raise KeyError
-        except (KeyError, TypeError, c.CryptoError):
+            body = {k: env[k] for k in ("cmd", "device", "ts", "nonce", "args")}
+            if "aud" in env:
+                body["aud"] = env["aud"]
+            canon = c.canonical(body)
+        except Exception:  # noqa: BLE001  any malformed envelope is a clean 400, never a 500
+            self._ua_suppressed += 1
             raise Denied("bad_request", "malformed envelope", 400) from None
-
-        now = self.clock()
-        lkey = f"{dev_id[:64]}@{self._src}"
-        if self.locks.get(lkey, 0) > now:
-            if lkey not in self._lock_logged:  # one audit line per lock, so a flood cannot fill the disk
-                self._lock_logged.add(lkey)
-                self._log("auth.locked_out", "unknown", {"device": dev_id[:64], "cmd": cmd[:32], "source": self._src})
-            raise Denied("locked", "identifier temporarily locked after repeated failures", 429)
 
         dev = self.state["devices"].get(dev_id)
         if dev is None:
-            self._deny("auth.unknown_device", "unknown", {"device": dev_id[:64], "cmd": cmd[:32]},
-                       "unauthorized", "unknown device")
-        body = {k: env[k] for k in ("cmd", "device", "ts", "nonce", "args")}
-        if "aud" in env:
-            body["aud"] = env["aud"]
-        if not c.verify(c.b64d(dev["sign_pub"]), "cmd", c.canonical(body), sig):
-            self._deny("auth.bad_signature", dev_id, {"device": dev_id, "cmd": cmd[:32]},
-                       "unauthorized", "bad signature")
+            self._throttled("anon", self._src, "auth.unknown_device", "unknown",
+                            {"device": dev_id[:64], "cmd": cmd[:32]}, "unauthorized", "unknown device")
+        if not c.verify(c.b64d(dev["sign_pub"]), "cmd", canon, sig):
+            self._throttled("anon", self._src, "auth.bad_signature", dev_id,
+                            {"device": dev_id, "cmd": cmd[:32]}, "unauthorized", "bad signature")
+        # from here on the signature is valid for a known device
+        if self._rate_hit(f"dev:{dev_id}", DEVICE_RATE_PER_MIN, now):
+            self._ua_suppressed += 1
+            raise Denied("rate_limited", "too many requests from this device", 429)
         if aud != self.name:
-            self._deny("auth.wrong_audience", dev_id, {"device": dev_id, "cmd": cmd, "aud": aud[:64]},
-                       "wrong_audience", "request was signed for a different node")
+            self._throttled("anon", self._src, "auth.wrong_audience", dev_id,
+                            {"device": dev_id, "cmd": cmd, "aud": aud[:64]},
+                            "wrong_audience", "request was signed for a different node")
         if abs(now - ts) > SKEW_S or ts < self.boot:
-            self._deny("auth.stale", dev_id, {"device": dev_id, "cmd": cmd, "skew": round(now - ts, 1)},
-                       "stale", "timestamp outside the allowed window")
+            self._throttled("anon", self._src, "auth.stale", dev_id,
+                            {"device": dev_id, "cmd": cmd, "skew": round(now - ts, 1)},
+                            "stale", "timestamp outside the allowed window")
         self._prune_nonces(now)
         nkey = f"{dev_id}:{nonce}"
-        if nkey in self.nonces:
-            self._deny("auth.replay", dev_id, {"device": dev_id, "cmd": cmd}, "replay", "nonce already used")
-        self.nonces[nkey] = now
+        bh = c.sha256_hex(canon)
+        seen = self.nonces.get(nkey)
+        if seen is not None:
+            if seen[1] == self._src and seen[2] == bh:
+                # the identical request again from the same place: a network retry, not an attack.
+                # Refuse it (single use), do not alert, do not penalise the sender.
+                self._ua_suppressed += 1
+                raise Denied("replay", "request already processed; send a new one", 409)
+            self._throttled("anon", f"{dev_id}@{self._src}", "auth.replay", dev_id,
+                            {"device": dev_id, "cmd": cmd}, "replay", "nonce already used")
+        self.nonces[nkey] = (now, self._src, bh)
 
         if dev["status"] != "active" or dev_id in self.revoked:
             if dev["status"] == "active":
                 self._apply_remove_device(dev_id, "revoked")
                 self._persist()
-            self._deny("auth.revoked_device_use", dev_id,
-                       {"device": dev_id, "cmd": cmd, "status": "revoked" if dev["status"] == "active" else dev["status"],
-                        "user": dev["user"]},
-                       "revoked", f"device is {dev['status']}")
+            self._throttled("revoked", dev_id, "auth.revoked_device_use", dev_id,
+                            {"device": dev_id, "cmd": cmd,
+                             "status": "revoked" if dev["status"] == "active" else dev["status"],
+                             "user": dev["user"]},
+                            "revoked", f"device is {dev['status']}")
         user = self.state["users"].get(dev["user"])
         if not user or not user["active"]:
             self._deny("auth.disabled_user", dev_id, {"device": dev_id, "user": dev["user"], "cmd": cmd},
@@ -407,7 +482,7 @@ class GuardService:
     def _prune_nonces(self, now: float) -> None:
         if len(self.nonces) > 1024:
             cutoff = now - 2 * SKEW_S
-            self.nonces = {k: v for k, v in self.nonces.items() if v >= cutoff}
+            self.nonces = {k: v for k, v in self.nonces.items() if v[0] >= cutoff}
 
     # --------------------------------------------------------------- commands
 
@@ -476,6 +551,9 @@ class GuardService:
             "user": target, "status": "active", "sign_pub": c.b64e(sp), "kem_pub": c.b64e(kp),
             "enrolled_at": self.clock(),
         }
+        for f in self.state["files"].values():
+            if target in f["acl"]:
+                f["needs_rotation"] = True   # the new device holds no wrap until the owner or an admin re-keys
         self._log("device.enrolled", dev, {"user": target, "device": new_dev, "by": user})
         return {"ok": True}
 
@@ -564,6 +642,13 @@ class GuardService:
                 if p.name not in keep:
                     p.unlink(missing_ok=True)
 
+    @staticmethod
+    def _check_commit(x: Any) -> str:
+        """Key-commitment tag: HMAC(dek, file|epoch), checked by readers before they trust the key."""
+        if not isinstance(x, str) or len(x) != 64 or set(x) - set("0123456789abcdef"):
+            raise Denied("bad_request", "key commitment missing or malformed", 400)
+        return x
+
     def _check_blob(self, ct_b64: Any) -> bytes:
         if not isinstance(ct_b64, str) or len(ct_b64) > MAX_FILE_BYTES * 4 // 3 + 64:
             raise Denied("bad_request", "ciphertext missing or too large", 400)
@@ -596,10 +681,13 @@ class GuardService:
         acl = self._acl(args, user)
         if user not in acl:
             raise Denied("bad_request", "creator must be in acl", 400)
+        if len(self.state["files"]) >= MAX_FILES:
+            raise Denied("quota", "file limit reached", 429)
+        commit = self._check_commit(args.get("commit"))
         ct = self._store_blob(self._check_blob(args.get("ciphertext")))
         wraps = self._check_wraps(args.get("wraps"), acl)
         self.state["files"][fid] = {
-            "owner": user, "acl": acl, "epoch": 1, "ct": ct,
+            "owner": user, "acl": acl, "epoch": 1, "ct": ct, "commit": commit,
             "wraps": wraps, "needs_rotation": False, "prev": None,
         }
         self._log("file.created", dev, {"file": fid, "owner": user, "acl": acl, "epoch": 1})
@@ -622,7 +710,7 @@ class GuardService:
         if want is not None and (isinstance(want, bool) or not isinstance(want, int)):
             raise Denied("bad_request", "epoch must be an integer", 400)
         if want is not None and want != f["epoch"]:
-            return self._fetch_previous(dev, user, fid, f, want)
+            return self._fetch_previous(dev, user, role, fid, f, want)
         floor = self.epoch_floor.get(fid)
         if floor and floor[0] > f["epoch"] and self.clock() - floor[1] > GRACE_S:
             self._deny("access.denied", dev, {"device": dev, "user": user, "file": fid, "action": "fetch",
@@ -634,10 +722,15 @@ class GuardService:
                                               "action": "fetch", "why": "no key wrapped for this device"},
                        "forbidden", "no key available for this device")
         self._log("access.granted", dev, {"device": dev, "user": user, "file": fid, "epoch": f["epoch"]})
-        return {"file_id": fid, "epoch": f["epoch"], "ciphertext": self._load_blob(f["ct"]), "wrap": wrap,
+        return {"file_id": fid, "epoch": f["epoch"], "ciphertext": self._load_blob(f["ct"]), "wrap": wrap, "commit": f["commit"],
+                "can_rotate": self._may_rotate(user, role, f),
                 "acl": f["acl"], "needs_rotation": f["needs_rotation"]}
 
-    def _fetch_previous(self, dev, user, fid, f, want):
+    @staticmethod
+    def _may_rotate(user: str, role: str, f: dict[str, Any]) -> bool:
+        return role == "admin" or f["owner"] == user
+
+    def _fetch_previous(self, dev, user, role, fid, f, want):
         """Rotation cutoff: the previous version is readable for GRACE_S seconds, then rejected."""
         prev = f.get("prev")
         now = self.clock()
@@ -657,12 +750,19 @@ class GuardService:
                        "forbidden", "no key available for this device")
         self._log("access.granted_grace", dev, {"device": dev, "user": user, "file": fid, "epoch": want,
                                                 "age_s": round(age, 1)})
-        return {"file_id": fid, "epoch": want, "ciphertext": self._load_blob(prev["ct"]), "wrap": wrap,
+        return {"file_id": fid, "epoch": want, "ciphertext": self._load_blob(prev["ct"]), "wrap": wrap, "commit": prev["commit"],
+                "can_rotate": self._may_rotate(user, role, f),
                 "acl": f["acl"], "needs_rotation": True, "grace_remaining_s": round(GRACE_S - age, 1)}
 
     def cmd_rotate(self, dev, user, role, args):
         fid = _valid_id(args.get("file_id"))
         f = self._file_for(dev, user, role, fid, "rotate")
+        if not self._may_rotate(user, role, f):
+            # a member can read; only the owner or an admin can write a new version, so a member
+            # cannot replace the content for everyone else
+            self._deny("authz.denied", dev, {"device": dev, "user": user, "file": fid, "action": "rotate",
+                                             "why": "only the owner or an admin may write a new version"},
+                       "forbidden", "only the owner or an admin may rotate this file")
         if dev not in f["wraps"]:
             self._deny("access.denied", dev, {"device": dev, "file": fid, "action": "rotate",
                                               "why": "no key wrapped for this device"},
@@ -678,6 +778,7 @@ class GuardService:
             acl = self._acl(args, user)
             if f["owner"] not in acl and role != "admin":
                 raise Denied("bad_request", "owner must stay in acl", 400)
+        commit = self._check_commit(args.get("commit"))
         ct_raw = self._check_blob(args.get("ciphertext"))
         wraps = self._check_wraps(args.get("wraps"), acl)
         old_acl = f["acl"]
@@ -688,9 +789,9 @@ class GuardService:
         self._log("file.rotate_prepared", dev, {"file": fid, "from_epoch": f["epoch"], "to_epoch": f["epoch"] + 1})
         self._crash("rotate_after_prepare")
         # Keep the old version for in-flight readers, only for devices that stay eligible.
-        f["prev"] = {"epoch": f["epoch"], "ct": f["ct"], "rotated_at": self.clock(),
+        f["prev"] = {"epoch": f["epoch"], "ct": f["ct"], "commit": f["commit"], "rotated_at": self.clock(),
                      "wraps": {d: w for d, w in f["wraps"].items() if d in wraps}}
-        f.update(acl=acl, ct=ct, wraps=wraps, epoch=f["epoch"] + 1, needs_rotation=False)
+        f.update(acl=acl, ct=ct, commit=commit, wraps=wraps, epoch=f["epoch"] + 1, needs_rotation=False)
         self._persist()
         self._crash("rotate_mid_commit")
         self._log("file.rotated", dev, {"file": fid, "epoch": f["epoch"], "by": user,
@@ -702,7 +803,8 @@ class GuardService:
 
     def cmd_list_files(self, dev, user, role, args):
         return {"files": [
-            {"file_id": k, "epoch": f["epoch"], "needs_rotation": f["needs_rotation"]}
+            {"file_id": k, "epoch": f["epoch"], "needs_rotation": f["needs_rotation"],
+             "has_key": dev in f["wraps"], "can_rotate": self._may_rotate(user, role, f)}
             for k, f in sorted(self.state["files"].items()) if user in f["acl"]
         ]}
 
@@ -758,24 +860,48 @@ class GuardService:
             return {"body": body, "sig": c.b64e(c.sign(self._sec, "snapshot", c.canonical(body)))}
 
     def install_snapshot(self, snap: dict[str, Any], primary_pub: bytes) -> bool:
-        """Replica: install a newer, correctly signed snapshot. Local revocations always win."""
+        """Replica: install a newer, correctly signed snapshot. Local revocations always win.
+
+        The new state is built and checked on the side; the live state is swapped only at the end.
+        """
         with self._lock:
-            if not c.verify(primary_pub, "snapshot", c.canonical(snap["body"]), c.b64d(snap["sig"])):
+            try:
+                ok = c.verify(primary_pub, "snapshot", c.canonical(snap["body"]), c.b64d(snap["sig"]))
+                version = snap["body"]["version"]
+                new_state = json.loads(json.dumps(snap["body"]["state"]))
+                blobs = snap["body"].get("blobs", {})
+                if not isinstance(blobs, dict) or isinstance(version, bool) or not isinstance(version, int):
+                    raise ValueError
+            except Exception:  # noqa: BLE001
+                raise Denied("bad_snapshot", "malformed snapshot", 400) from None
+            if not ok:
                 raise Denied("bad_signature", "snapshot signature invalid", 400)
-            if snap["body"]["version"] <= self.snapshot_version:
+            if version <= self.snapshot_version:
                 return False
-            for h, b64 in snap["body"].get("blobs", {}).items():
+            new_hashes = set()
+            for f in new_state.get("files", {}).values():
+                new_hashes.add(f["ct"])
+                if f.get("prev"):
+                    new_hashes.add(f["prev"]["ct"])
+            staged: dict[str, bytes] = {}
+            for h, b64 in blobs.items():
                 raw = c.b64d(b64)
                 if c.sha256_hex(raw) != h:
                     raise Denied("bad_snapshot", "snapshot blob does not match its hash", 400)
-                self._store_blob(raw)
-            self.state = json.loads(json.dumps(snap["body"]["state"]))
-            missing = [h for h in self.blob_hashes() if not self._blob_path(h).exists()]
-            if missing:
+                staged[h] = raw
+            if [h for h in new_hashes if h not in staged and not self._blob_path(h).exists()]:
                 raise Denied("bad_snapshot", "snapshot references blobs that were not supplied", 400)
-            self.snapshot_version = snap["body"]["version"]
-            self._enforce_revoked()
-            self._persist()
+            # validated: now write blobs and swap
+            for raw in staged.values():
+                self._store_blob(raw)
+            old_state, old_ver = self.state, self.snapshot_version
+            self.state, self.snapshot_version = new_state, version
+            try:
+                self._enforce_revoked()
+                self._persist()
+            except BaseException:
+                self.state, self.snapshot_version = old_state, old_ver
+                raise
             return True
 
     def apply_cert(self, cert: dict[str, Any], primary_pub: bytes) -> str:
@@ -794,5 +920,6 @@ class GuardService:
                 cur = self.epoch_floor.get(body["file"], (0, 0.0))
                 if body["epoch"] > cur[0]:
                     self.epoch_floor[body["file"]] = (body["epoch"], body["ts"])
+                    self._persist()
                 return "epoch"
         raise Denied("bad_request", "unknown certificate kind", 400)
