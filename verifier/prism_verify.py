@@ -9,7 +9,9 @@ from docs/CORE.md and docs/CRYPTO.md, so a bug in the service's own checker cann
     python verifier/prism_verify.py backup --file x.bak     --pub server_sign.pub
     python verifier/prism_verify.py state  --file state.json --pub server_sign.pub
 
-Exit code 0 only if every check passes. Each check prints one line, OK or FAIL, with a reason.
+Exit code 0 only if every check passes and completeness is established; 1 if a check fails; 2 if everything
+verified but completeness could not be established (audit without --expect-head, or state, which does not check the
+journal). A script that tests only the exit code is therefore never told OK about a possibly truncated log. Each check prints one line, OK or FAIL, with a reason.
 
 What it proves: the audit log is an unbroken, correctly signed chain (and, with --expect-head, that it ends where
 you recorded it); a backup's manifest is signed by the service and every blob inside matches its hash; state.json
@@ -182,7 +184,7 @@ def main(argv=None) -> int:
     else:
         ok, why = verify_state(a.file, pub)
     print(("OK   " if ok else "FAIL ") + a.what + ": " + why)
-    return 0 if ok else 1
+    return 1 if not ok else (2 if "\nNOTE" in why else 0)
 
 
 if __name__ == "__main__":

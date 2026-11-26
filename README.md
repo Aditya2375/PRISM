@@ -36,7 +36,7 @@ python -m pytest -q            # the full suite
 
 ## What is different here
 
-* Nothing custom in the cryptography. HPKE, AES-256-GCM, ML-DSA-65 and scrypt come from one pinned library (`cryptography`), and NIST
+* Nothing custom in the cryptography. HPKE, AES-256-GCM, ML-DSA-65 and scrypt come from the pinned `cryptography` library, and NIST
   known-answer vectors run in the tests. One more vetted library, PyCryptodome, is used only for the optional k-of-n
   split of the backup key (`kig/threshold.py`, Shamir from `Crypto.Protocol.SecretSharing`); we wrote no
   secret-sharing maths. Both are pinned in `requirements.txt`.

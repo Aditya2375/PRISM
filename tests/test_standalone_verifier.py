@@ -24,7 +24,7 @@ def test_verifier_does_not_import_the_service_code():
 def test_audit_log_ok_then_each_tamper_fails(w, tmp_path):
     d = w.svc.dir
     base = ["audit", "--log", d / "audit.jsonl", "--pub", d / "server_sign.pub", "--anchor", d / "audit.head"]
-    assert run(*base)[0] == 0
+    assert run(*base)[0] == 2          # verified, but completeness unknown without an independent head
     assert run(*base, "--expect-head", w.svc.audit.head)[0] == 0
     assert run(*base, "--expect-head", "0" * 64)[0] == 1
     lines = (d / "audit.jsonl").read_text().splitlines()
@@ -36,7 +36,7 @@ def test_audit_log_ok_then_each_tamper_fails(w, tmp_path):
     swapped = tmp_path / "swap.jsonl"; swapped.write_text("\n".join(lines[:2] + [lines[3], lines[2]] + lines[4:]) + "\n")
     assert run("audit", "--log", swapped, "--pub", d / "server_sign.pub", "--anchor", d / "audit.head")[0] == 1
     rc, out = run("audit", "--log", d / "audit.jsonl", "--pub", d / "server_sign.pub")   # no anchor, no head
-    assert rc == 0 and "completeness NOT established" in out
+    assert rc == 2 and "completeness NOT established" in out
 
 
 def test_wrong_service_key_fails(w, tmp_path):
@@ -59,7 +59,7 @@ def test_backup_and_state(w, tmp_path):
     code, out = run("backup", "--file", bad, "--pub", sp)
     assert code == 1 and "does not match its hash" in out
     w.svc._persist(); w.svc.store.snapshot() if hasattr(w.svc.store, "snapshot") else None
-    assert run("state", "--file", w.svc.dir / "state.json", "--pub", sp)[0] == 0
+    assert run("state", "--file", w.svc.dir / "state.json", "--pub", sp)[0] == 2   # signed, journal not checked
 
 
 def test_backup_with_duplicate_member_names_is_refused(w, tmp_path):

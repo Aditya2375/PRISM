@@ -44,6 +44,16 @@ def main(argv: list[str] | None = None) -> int:
     p = sub.add_parser("verify-log", help="verify the signed key-event log offline")
     p.add_argument("--data", required=True)
     p.add_argument("--expect-head", default=None, help="head hash recorded elsewhere; detects tail truncation")
+    p = sub.add_parser("backup-key", help="split the backup private key into k-of-n shares, or combine shares")
+    bk = p.add_subparsers(dest="bk", required=True)
+    q = bk.add_parser("split")
+    q.add_argument("--key", required=True, help="backup.key file (unsealed; split before you seal it elsewhere)")
+    q.add_argument("-k", type=int, required=True)
+    q.add_argument("-n", type=int, required=True)
+    q.add_argument("--out-dir", required=True)
+    q = bk.add_parser("combine")
+    q.add_argument("--shares", nargs="+", required=True)
+    q.add_argument("--out", required=True)
     p = sub.add_parser("doctor", help="check a data directory: state, audit chain, blobs, permissions")
     p.add_argument("--data", required=True)
     p = sub.add_parser("enroll", help="enrol a new device from its public-key JSON, after comparing its fingerprint")
@@ -74,6 +84,28 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("args", nargs="?", default="{}")
     a = ap.parse_args(argv)
 
+    if a.op == "backup-key":
+        from . import threshold, vault
+        try:
+            if a.bk == "split":
+                secret = Path(a.key).read_bytes()
+                if vault.is_sealed(secret):
+                    print("refused: the key file is passphrase-sealed; split the unsealed key", file=sys.stderr)
+                    return 2
+                out = Path(a.out_dir)
+                out.mkdir(parents=True, exist_ok=True)
+                for idx, sh in enumerate(threshold.split(secret, a.k, a.n), 1):
+                    vault.write_atomic(out / f"share-{idx}.json", sh, 0o600)
+                    print(f"share-{idx}.json  fingerprint {threshold.fingerprint(sh)}")
+                print(f"{a.k} of {a.n} shares are needed. Record the fingerprints separately; give each share to a different holder.")
+            else:
+                key = threshold.combine([Path(x).read_bytes() for x in a.shares])
+                vault.write_atomic(a.out, key, 0o600)
+                print(f"recovered {len(key)} bytes to {a.out}")
+        except threshold.ThresholdError as e:
+            print(f"refused: {e}", file=sys.stderr)
+            return 2
+        return 0
     if a.op == "doctor":
         from .doctor import run
         return run(a.data)

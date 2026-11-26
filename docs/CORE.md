@@ -234,17 +234,16 @@ this file from the docs, which is the point: a bug in the service's own checker 
 
 ## Splitting the backup private key (k of n)
 
-`kig/threshold.py` splits any secret, such as the backup private key, into n shares of which any k recover it.
-It contains no secret-sharing maths. A random 16-byte wrapping key seals the secret with AES-GCM (`cryptography`),
-and only the wrapping key is split, with PyCryptodome's Shamir (`Crypto.Protocol.SecretSharing`, pinned in
-`requirements.txt`). Shares from different splits, duplicates, corrupt shares and too few shares are refused.
-Limits: the sealed secret is repeated in every share; there is no verifiable sharing, so a corrupt share shows up
-only as a failed combine; and PyCryptodome's Shamir is a library we use, not one we audited.
-
-Audit result wording: without `--expect-head` the verifier still prints a second line saying completeness is NOT
-established (an anchor beside the log is not independent, and entries could have been removed from the end). With a head
-you recorded elsewhere, tail removal is excluded. The `state` check says the journal is not checked and that an older
-signed snapshot also passes (rollback). `backup` rejects archives with duplicate member names.
+`kig backup-key split --key backup.key -k 3 -n 5 --out-dir shares/` writes n share files (0600) and prints one
+fingerprint per share; record those elsewhere. `kig backup-key combine --shares a.json b.json c.json --out backup.key`
+recovers the key. `kig/threshold.py` contains no secret-sharing maths. A random 32-byte wrapping key seals the secret
+with AES-256-GCM (`cryptography`); the wrapping key is split as two 16-byte halves with PyCryptodome's Shamir
+(`Crypto.Protocol.SecretSharing`, pinned in `requirements.txt`) at the same indices, so the AES key keeps its full 256
+bits. Fields are validated before Shamir sees them (a share index of -1 once made the library loop forever). Each
+share carries a fingerprint of its own bytes: damaged shares are named and skipped, and combine tries other subsets of k
+(at most 200) when more than k shares are offered. Shares from different splits, duplicates, and too few intact shares
+are refused. Limits: the sealed secret is repeated in every share; no verifiable sharing, so a forged share with a
+matching fingerprint is found only by trying subsets; the library is one we use and did not audit.
 
 ## Key storage interface
 
