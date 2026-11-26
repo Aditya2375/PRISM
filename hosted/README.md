@@ -21,3 +21,4 @@ A throwaway copy of the PRISM web console for reviewing the design in a browser.
   several distinct addresses together still can), a 10 s body read timeout, a 2 MB cap on backend replies, and uvicorn keep-alive 5 s.
   There is no connection cap and no header-read timeout in this process (a cap let partial-header sockets lock everyone out), so slow-header
   attacks are left to the host's edge proxy; Render's does that. Checked on the live host after deploy.
+* Header size is not capped by this process (a 20 KB header gets through to the proxy); the host's edge limits it.

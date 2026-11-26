@@ -78,7 +78,7 @@ def main() -> int:
     static = os.environ.get("HOSTED_STATIC", str(ROOT / "web-p3" / "hosted-dist"))
     try:
         uvicorn.run(build_app(static), host="0.0.0.0", port=int(os.environ.get("PORT", "10000")), proxy_headers=False,
-                    timeout_keep_alive=5, h11_max_incomplete_event_size=8192, timeout_graceful_shutdown=3)
+                    timeout_keep_alive=5, timeout_graceful_shutdown=3)
     finally:
         for p in (wa, svc):
             p.terminate()
