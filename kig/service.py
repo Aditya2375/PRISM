@@ -963,11 +963,13 @@ class GuardService:
             ents = self.audit.entries
             counts = self.__dict__.setdefault("_ev_counts", {})
             seen = self.__dict__.get("_ev_seen", 0)
-            if seen > len(ents):                 # the log was replaced: count again
+            last = self.__dict__.get("_ev_last")  # hash of the last entry counted: a replaced log has a different one
+            if seen > len(ents) or (seen and ents[seen - 1]["hash"] != last):
                 counts.clear(); seen = 0
             for e in ents[seen:]:
                 counts[e["type"]] = counts.get(e["type"], 0) + 1
             self._ev_seen = len(ents)
+            self._ev_last = ents[-1]["hash"] if ents else None
             lease_age = None if self.last_sync is None else round(self.mono() - self.last_sync, 3)
             return {"users": len(s["users"]), "devices_by_status": by_dev, "files": len(s["files"]),
                     "files_needing_rotation": sum(1 for f in s["files"].values() if f["needs_rotation"]),

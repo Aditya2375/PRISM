@@ -98,13 +98,10 @@ def write_atomic(path: str | Path, data: bytes, mode: int = 0o600, exclusive: bo
                 os.unlink(tmp)
             except FileExistsError:
                 raise
-            except OSError:             # no hard links here (FAT, some network mounts): create the target exclusively
-                tfd = os.open(p, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), mode)
-                with os.fdopen(tfd, "wb") as fh:
-                    fh.write(data)
-                    fh.flush()
-                    os.fsync(fh.fileno())
-                os.unlink(tmp)
+            except OSError:             # no hard links here (FAT, some network mounts)
+                if os.path.lexists(p):  # check, then an atomic rename: content is never partial; two writers racing
+                    raise FileExistsError(str(p)) from None  # at the same instant on such a filesystem could still collide
+                os.replace(tmp, p)
         else:
             os.replace(tmp, p)
     except BaseException:

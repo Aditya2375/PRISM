@@ -103,3 +103,19 @@ def test_cli_split_and_combine(tmp_path):
                      str(tmp_path / "s/share-1.json"), "--out", str(out)]) == 0
     assert out.read_bytes() == key.read_bytes()
     assert cli.main(["backup-key", "combine", "--shares", str(tmp_path / "s/share-3.json"), "--out", str(out)]) == 2
+
+
+def test_search_is_deterministic_and_reports_that_it_was_bounded(monkeypatch):
+    import json
+    monkeypatch.setattr(t, "RANDOM_TRIES", 40)
+    sh = t.split(os.urandom(32), 9, 18)
+    for i in range(9):                      # 9 bad of 18: 9 honest shares, exactly k
+        d = json.loads(sh[i]); raw = os.urandom(32)
+        from kig import crypto as c
+        d["share"] = c.b64e(raw); d["fp"] = t._fp(d["i"], raw); sh[i] = json.dumps(d).encode()
+    msgs = []
+    for _ in range(2):
+        with pytest.raises(t.ThresholdError) as e:
+            t.combine(sh)
+        msgs.append(str(e.value))
+    assert msgs[0] == msgs[1] and "bounded search" in msgs[0] and "sampled subsets" in msgs[0]

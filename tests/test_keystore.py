@@ -58,3 +58,28 @@ def test_write_atomic_exclusive_and_symlink(tmp_path):
     (tmp_path / "f.tmp").symlink_to(tmp_path / "victim")
     vault.write_atomic(p, b"3")
     assert (tmp_path / "victim").read_bytes() == b"keep" and p.read_bytes() == b"3"
+
+
+def test_exclusive_write_without_hardlinks_refuses_existing_and_leaves_no_partial(tmp_path, monkeypatch):
+    import os
+    from kig import vault
+
+    def nolink(*a, **k):
+        raise OSError(1, "no hard links")
+    monkeypatch.setattr(os, "link", nolink)
+    p = tmp_path / "s.json"
+    vault.write_atomic(p, b"first", exclusive=True)
+    with pytest.raises(FileExistsError):
+        vault.write_atomic(p, b"second", exclusive=True)
+    assert p.read_bytes() == b"first"
+    assert [x.name for x in tmp_path.iterdir()] == ["s.json"]       # no temp files left behind
+
+
+def test_metrics_recount_when_the_audit_log_is_replaced(w):
+    a = w.svc.metrics()
+    assert sum(a["audit_events"].values()) == a["audit_entries"]
+    ents = w.svc.audit.entries
+    forged = [dict(e, type="x.forged", hash=f"{i:064d}") for i, e in enumerate(ents)]   # same length, different log
+    w.svc.audit.entries = forged
+    b = w.svc.metrics()
+    assert b["audit_events"] == {"x.forged": len(forged)}

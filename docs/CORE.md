@@ -244,8 +244,11 @@ bits. Fields are validated before Shamir sees them (a share index of -1 once mad
 share carries a fingerprint of its own bytes. The fingerprint catches accidents only, since anyone can recompute it. Damaged
 shares are named and skipped; when more than k shares are offered and one fails to open, combine leaves out one share at
 a time, then two (200 attempts), then tries up to 3000 random subsets of k (every subset when there are fewer than that).
-AES-GCM tells it when a subset is right, so recovery works whenever enough honest shares are offered and the random
-search lands on them: expected tries are C(offered,k) / C(honest,k), and an unrecoverable set takes around ten seconds to give up. A stray share from
+AES-GCM tells it when a subset is right. The exact condition: if C(offered,k) is at most 3000, every subset is tried and
+recovery succeeds whenever k honest shares are offered. Above that it samples 3000 subsets, seeded from the shares so
+the same input always gives the same result, and succeeds with probability 1-(1-p)^3000 where p = C(honest,k) / C(offered,k).
+It can miss a rare honest subset (for example 14 bad of 30 with k=15 almost surely fails); the error says the search
+was bounded. A failing search takes around ten seconds. A stray share from
 another split is ignored if exactly one set has enough intact shares; if two sets do, it refuses. The CLI refuses to
 overwrite existing share files or an existing output key unless `--force` is given, and creates the share directory 0700. Limits: the sealed secret is repeated in every share; no verifiable sharing, so a forged share with a
 matching fingerprint is found only by trying subsets; the library is one we use and did not audit.
@@ -259,4 +262,5 @@ for one, and it is not a claim of hardware protection. On every start the public
 otherwise start-up refuses (StateCorrupt); with a key store a missing public file is rewritten from the seed. If the
 store has no key but the public file exists, start-up refuses rather than generating a new key. First creation runs under
 an exclusive file lock (`.keylock`), the secret is stored before the public file, and temp files are random, exclusive
-and never follow symlinks. `FileKeyStore` without a passphrase stores the key unencrypted (mode 0600) and logs a warning. Backup and the CLI still use their own key files.
+and never follow symlinks. Exclusive writes use a hard link; on a filesystem without hard links they check and then
+rename (content is never partial, but two writers racing at the same instant could collide). `FileKeyStore` without a passphrase stores the key unencrypted (mode 0600) and logs a warning. Backup and the CLI still use their own key files.

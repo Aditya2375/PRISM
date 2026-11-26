@@ -146,7 +146,7 @@ def combine(shares: list[bytes]) -> bytes:
     # 2. the AEAD tells us when a subset is right. Random subsets find an honest one quickly even when the bad
     #    holders are many (chance per try = C(honest,k) / C(offered,k)); small cases are covered in full.
     total = math.comb(len(good), k)
-    rnd = random.Random()
+    rnd = random.Random(hashlib.sha256(b"".join(sorted(d["_share"] + bytes([d["i"]]) for d in good))).digest())  # same input, same search
     if total <= RANDOM_TRIES:
         combos = list(itertools.combinations(good, k))
         rnd.shuffle(combos)
@@ -159,6 +159,8 @@ def combine(shares: list[bytes]) -> bytes:
             res = attempt(rnd.sample(good, k))
             if res is not None:
                 return res
-    raise ThresholdError("shares do not combine: a share was altered or is not from this set"
+    raise ThresholdError("shares do not combine (bounded search: " + ("every subset of k was tried" if total <= RANDOM_TRIES
+                         else f"{RANDOM_TRIES} sampled subsets of k were tried, which can miss a rare honest subset") + "): "
+                         "a share was altered or is not from this set"
                          + (f" (damaged by fingerprint: {bad + bad_all})" if bad or bad_all else "")
                          + (f"; {ignored} offered share(s) ignored" if ignored else ""))
