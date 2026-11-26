@@ -1,6 +1,6 @@
 # P.R.I.S.M.
 
-Post-quantum Resilient Identity & Security Management. Core design notes: `docs/CORE.md`; cryptography and claims: `docs/CRYPTO.md`.
+Post-quantum Resilient Identity & Security Management. Package `kig` is the code name of P.R.I.S.M. (see docs/CRYPTO.md). Core design notes: `docs/CORE.md`; cryptography and claims: `docs/CRYPTO.md`.
 
 DevForge Yugaantar, Track 4 ("Key Identity Guard").
 

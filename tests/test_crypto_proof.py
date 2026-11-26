@@ -74,3 +74,25 @@ def test_backup_with_other_suite_is_refused(w, tmp_path):
     out.write_bytes(json.dumps(doc).encode())
     with pytest.raises(b.BackupError, match="suite"):
         b.verify_and_open(out, pub, sec, w.svc.pub)
+
+
+def test_foreign_suite_is_refused_for_state_and_device_key_file(w, tmp_path):
+    from kig.client import Device
+    from kig.service import GuardService, StateCorrupt
+    d = tmp_path / "data"
+    svc_pub = (d / "server_sign.pub").read_bytes()
+    st = json.loads((d / "state.json").read_text())
+    st.pop("_sig")
+    st["suite"] = "PRISM-0:old"
+    st["_sig"] = c.b64e(c.sign(w.svc._sec, "state", c.canonical({k: v for k, v in st.items() if k != "_sig"})))
+    (d / "state.json").write_text(json.dumps(st))
+    with pytest.raises(StateCorrupt, match="suite"):
+        GuardService(d, clock=w.clock)
+    p = tmp_path / "dev.json"
+    w.alice_laptop.save(p)
+    raw = json.loads(p.read_text())
+    raw["suite"] = "PRISM-0:old"
+    p.write_text(json.dumps(raw))
+    with pytest.raises(vault.VaultError, match="suite"):
+        Device.load(p)
+    assert svc_pub

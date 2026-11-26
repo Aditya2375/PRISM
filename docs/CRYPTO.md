@@ -10,23 +10,30 @@ protocol glue: which key encrypts what, and what bound data goes into the associ
 
 | Need | Primitive (from `cryptography`) | Where |
 | --- | --- | --- |
-| Protect a file key for a device or the backup key | HPKE (RFC 9180) with the library's hybrid KEM `MLKEM768_X25519`, HKDF-SHA256, ChaCha20-Poly1305 | `crypto.kem_encaps`, `kem_decaps` |
+| Protect a file key for a device or the backup key | HPKE (RFC 9180) with the library's `MLKEM768_X25519` hybrid KEM (an IETF draft construction, not an RFC), HKDF-SHA256, ChaCha20-Poly1305 | `crypto.kem_encaps`, `kem_decaps` |
 | Encrypt file content, backups, key files | AES-256-GCM, random 96-bit nonce, one fresh key per file version | `crypto.aead_encrypt` |
 | Sign state, snapshots, certificates, backups, audit entries | ML-DSA-65 (FIPS 204), purpose string prefixed to the message | `crypto.sign`, `verify` |
 | Passphrase to key | scrypt N=2^15 r=8 p=1, random salt, parameters authenticated | `vault.seal` |
 | Key commitment | HMAC-SHA256 keyed with the file key over file id and version | `client._commit` |
 | Hashes | SHA-256 | blob names, audit chain |
 
-Evidence that the pinned library implements the standards: `tests/test_crypto_proof.py` runs NIST ACVP
-vectors (usnistgov/ACVP-Server, commit pinned in `tests/vectors/acvp.json`): 25 ML-DSA-65 key generation
-cases, 25 ML-KEM-768 key generation cases and the ML-DSA-65 signature verification cases that use an empty
-context, which is what the library's API exposes.
+Evidence about the library (`cryptography==50.0.2`, pinned in `requirements.txt`): `tests/test_crypto_proof.py`
+runs NIST ACVP vectors (usnistgov/ACVP-Server, commit pinned in `tests/vectors/acvp.json`):
+* ML-DSA-65 key generation: 25 cases, public key from seed.
+* ML-KEM-768 key generation: 25 cases, encapsulation key from seed.
+* ML-DSA-65 signature verification: exactly 1 case (an invalid signature, which must be rejected). The
+  library's API takes no context string, so only vectors with an empty context can be expressed, and ACVP
+  has only that one for ML-DSA-65.
+
+Not independently tested: ML-KEM encapsulation and decapsulation (the library exposes no way to inject the
+randomness or load an expanded key), the hybrid HPKE KEM, and ML-DSA signing. For those we test round trips,
+tampering and cross-purpose rejection, and rely on the library for correctness.
 
 ## Key hierarchy
 1. Per file version: a random 256-bit file key (DEK) encrypts the content. It is never sent to the service.
-2. The DEK is wrapped once per eligible device with the hybrid KEM. Binding data (file id, device id, version,
-   purpose) is in the HPKE `info` and in the AEAD associated data, so a wrap cannot be replayed for another file,
-   device or version.
+2. The DEK is wrapped once per eligible device with the hybrid KEM. The HPKE `info` carries the file id, device
+   id and version; the AEAD that protects the DEK carries the file id and version. A wrap cannot be replayed for
+   another file, device or version.
 3. A rotation creates a new DEK and new wraps for the devices still eligible. A revoked device gets no wrap.
 4. The service signs state, backups and audit entries with its own ML-DSA-65 key. Devices sign each request.
 5. Backups are sealed to an offline backup key (hybrid KEM) and signed by the service.
@@ -44,6 +51,19 @@ context, which is what the library's API exposes.
 * Python cannot zeroise memory. Keys live in process memory while in use.
 * Libraries, not P.R.I.S.M., are the trusted base for constant-time behaviour.
 
+* Symmetric margin: AES-256 keeps about 128-bit strength against Grover-style attacks. The KEM and signatures
+  are the post-quantum parts.
+* Transport security (TLS) is out of scope: the demo binds to localhost and deployment is assumed to add TLS.
+
 ## Format guard
-Unknown or missing suite ids are refused (`crypto.require_suite`). Frozen data written by this release is
-opened by `tests/test_frozen_format.py`, so later changes cannot silently orphan existing data.
+* Carry a suite id and are refused if it differs or is missing: key files, vault files, `state.json`, backups.
+  Nothing was released before this id existed, so there is no older format to upgrade from.
+* Versioned by the `kig/v1/...` context strings inside HPKE `info` and AEAD associated data (a different
+  version fails authentication): file ciphertext, wraps, snapshots and certificates (purpose strings).
+* Unversioned: `revoked.log`, the audit log entries (signed, no suite field), and the client's seen-epoch file.
+  Changing any of these would need a deliberate migration.
+Frozen data written by this release is opened by `tests/test_frozen_format.py`.
+
+## Naming
+P.R.I.S.M. is the project. `PRISM` is the repo and the string in identifiers. `kig` (Key Identity Guard) is the
+original code name of the Python package and is kept so teammates' branches keep importing.
