@@ -26,6 +26,16 @@ export default function App() {
     return () => window.removeEventListener("popstate", back);
   }, [signedIn]);
 
+  useEffect(() => {
+    if (!signedIn) return undefined;
+    const apis = [adminApi, localApi];
+    const touch = () => apis.forEach((a) => a.touch());
+    const events = ["pointerdown", "keydown", "wheel", "touchstart"];
+    events.forEach((e) => window.addEventListener(e, touch, { passive: true }));
+    const stops = apis.map((a) => a.watch(signOut));
+    return () => { events.forEach((e) => window.removeEventListener(e, touch)); stops.forEach((f) => f()); };
+  }, [signedIn]); // eslint-disable-line react-hooks/exhaustive-deps
+
   if (!role) return <Landing onPick={pick} />;
   if (!signedIn) {
     return <Login role={role} api={role === "admin" ? adminApi : localApi} onBack={() => setRole("")} onSignedIn={() => setSignedIn(true)} />;

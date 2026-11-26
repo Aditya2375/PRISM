@@ -56,7 +56,6 @@ export function createApi({ baseUrl, headerName, now = () => Date.now(), fetchIm
     } finally {
       clearTimeout(timer);
     }
-    last = now();
     if (!res.ok) {
       let body = null;
       try { body = await res.json(); } catch { /* not JSON */ }
@@ -76,6 +75,13 @@ export function createApi({ baseUrl, headerName, now = () => Date.now(), fetchIm
       try { return await request("GET", probePath); } catch (e) { token = null; throw e; }
     },
     signOut() { token = null; },
+    // Only real user activity (pointer or key events) calls this. Background polling does not.
+    touch() { if (token !== null && !expired()) last = now(); },
+    // Runs a real timer: when the idle limit passes, the token is forgotten and onExpire runs once.
+    watch(onExpire, tickMs = 1000) {
+      const id = setInterval(() => { if (token !== null && expired()) { token = null; onExpire(); } }, tickMs);
+      return () => clearInterval(id);
+    },
     get signedIn() { return token !== null && !expired(); },
     get: (p) => request("GET", p),
     post: (p, json) => request("POST", p, { json }),

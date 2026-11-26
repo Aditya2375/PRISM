@@ -85,3 +85,7 @@ Close: "Nothing custom in the cryptography. Everything shown is covered by tests
 ## If something goes wrong on camera
 * `--net` prints a port or startup error: run it again. Each start retries on fresh ports.
 * Tests are slow: the full suite takes about 2.5 minutes. Do not run it live. Show the step you need.
+
+## Optional: the web console (screen recording)
+Command: `bash web/run_demo.sh` (needs Node 20+; it builds the app, starts the service, the local backend and the console, seeds a lost-phone story and prints the address and two tokens).
+Open http://localhost:4173. Operator console: paste the operator token, show the two alerts with device, user, node and event, then "Verify chain" and say it is the service checking itself; the independent check is `verifier/prism_verify.py`. Device holder: paste the session token, show files, the lost phone and the activity list. See web/README.md for limits.

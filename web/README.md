@@ -16,7 +16,13 @@ It starts the service, the local backend and this app, creates demo data (a lost
 
     cd web && npm ci && npm run build && npm test && npm run lint
 
+## Framing and network limits
+
+The service and `vite preview` send no X-Frame-Options or frame-ancestors header, and a meta CSP cannot set frame-ancestors, so this page can be framed by another site. Put a reverse proxy in front with `X-Frame-Options: DENY` before any real deployment. The CSP `connect-src` is fixed in `index.html` to `http://127.0.0.1` and `http://localhost` on ports 8443 (service) and 8788 (local backend). Other hosts need a rebuild with that line and `VITE_PRISM_SERVICE` / `VITE_PRISM_LOCAL` changed.
+
 ## Honest limits
+
+The idle logout counts pointer and key activity only. Background refreshes do not count. After 15 minutes without either, a timer forgets the token and returns to the sign-in screen.
 
 The "Verify chain" button shows the service checking itself. For independent proof use `verifier/prism_verify.py`. The UI cannot tell you the service is honest.
 

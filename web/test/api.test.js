@@ -89,3 +89,17 @@ test("toBase64 handles large and empty input", () => {
   const big = new Uint8Array(200000).fill(65);
   assert.equal(Buffer.from(toBase64(big), "base64").length, 200000);
 });
+
+test("polling does not keep a session alive, touch does, and a timer signs out", async () => {
+  let t = 0;
+  const api = createApi({ baseUrl: "http://127.0.0.1:1", headerName: "H", now: () => t, idleMs: 1000, fetchImpl: ok({}) });
+  await api.signIn("a-token-that-is-long", "/x");
+  t = 900; await api.get("/x");            // background poll
+  t = 1100; assert.equal(api.signedIn, false);
+  const api2 = createApi({ baseUrl: "http://127.0.0.1:1", headerName: "H", now: () => t, idleMs: 1000, fetchImpl: ok({}) });
+  t = 0; await api2.signIn("a-token-that-is-long", "/x");
+  t = 900; api2.touch(); t = 1800; assert.equal(api2.signedIn, true);
+  let fired = 0; const stop = api2.watch(() => fired++, 5);
+  t = 2500; await new Promise((r) => setTimeout(r, 40)); stop();
+  assert.equal(fired, 1); assert.equal(api2.signedIn, false);
+});
