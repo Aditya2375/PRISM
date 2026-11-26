@@ -41,7 +41,7 @@ def test_forwards_only_token_and_content_type_headers():
 
 def test_rate_limit_per_client():
     seen = []
-    c = TestClient(build_app(client=fake_backend(seen), limiter=Limiter(3, 60)))
+    c = TestClient(build_app(client=fake_backend(seen), limiter=Limiter(3, 60), trust_proxy=True))
     codes = [c.get("/v1/overview", headers={"x-kig-operator-token": "good", "x-forwarded-for": "1.1.1.1"}).status_code for _ in range(5)]
     assert codes == [200, 200, 200, 429, 429]
     # a different client is not affected
@@ -50,7 +50,7 @@ def test_rate_limit_per_client():
 
 def test_failed_token_attempts_get_cut_off_sooner():
     seen = []
-    c = TestClient(build_app(client=fake_backend(seen), limiter=Limiter(1000, 60), fail_limiter=Limiter(3, 60)))
+    c = TestClient(build_app(client=fake_backend(seen), limiter=Limiter(1000, 60), fail_limiter=Limiter(3, 60), trust_proxy=True))
     codes = [c.get("/v1/overview", headers={"x-kig-operator-token": "bad", "x-forwarded-for": "3.3.3.3"}).status_code for _ in range(6)]
     assert codes[:3] == [401, 401, 401] and codes[3:] == [429, 429, 429]
 
@@ -78,3 +78,44 @@ def test_backend_down_is_502_not_a_leak():
     c = TestClient(build_app(client=httpx.AsyncClient(transport=httpx.MockTransport(boom))))
     r = c.get("/v1/overview")
     assert r.status_code == 502 and r.json() == {"error": "backend_unavailable"}
+
+
+def test_spoofed_forwarded_for_does_not_dodge_limits_unless_proxy_is_trusted():
+    c = TestClient(build_app(client=fake_backend([]), limiter=Limiter(3, 60), trust_proxy=False))
+    codes = [c.get("/v1/overview", headers={"x-kig-operator-token": "good", "x-forwarded-for": f"7.7.7.{i}"}).status_code for i in range(5)]
+    assert codes == [200, 200, 200, 429, 429]
+
+
+def test_global_limits_cap_the_total_even_for_many_clients():
+    c = TestClient(build_app(client=fake_backend([]), limiter=Limiter(1000, 60), global_limiter=Limiter(4, 60), trust_proxy=True))
+    codes = [c.get("/v1/overview", headers={"x-kig-operator-token": "good", "x-forwarded-for": f"8.8.8.{i}"}).status_code for i in range(6)]
+    assert codes == [200] * 4 + [429] * 2
+    c = TestClient(build_app(client=fake_backend([]), limiter=Limiter(1000, 60), fail_limiter=Limiter(1000, 60),
+                             global_fail_limiter=Limiter(3, 60), trust_proxy=True))
+    codes = [c.get("/v1/overview", headers={"x-kig-operator-token": "bad", "x-forwarded-for": f"6.6.6.{i}"}).status_code for i in range(5)]
+    assert codes == [401, 401, 401, 429, 429]
+
+
+def test_security_headers_on_api_and_console(tmp_path):
+    (tmp_path / "index.html").write_text("<html></html>")
+    c = TestClient(build_app(str(tmp_path), client=fake_backend([])))
+    for r in (c.get("/"), c.get("/v1/overview", headers={"x-kig-operator-token": "good"}), c.get("/nope")):
+        assert "frame-ancestors 'none'" in r.headers["content-security-policy"]
+        assert r.headers["x-content-type-options"] == "nosniff"
+        assert r.headers["referrer-policy"] == "no-referrer"
+
+
+def test_limiter_table_is_bounded():
+    lim = Limiter(5, 60, max_keys=10)
+    for i in range(100):
+        lim.allow(f"k{i}")
+    assert len(lim.hits) == 10
+
+
+def test_oversized_backend_reply_is_refused(monkeypatch):
+    import hosted.proxy as hp
+    monkeypatch.setattr(hp, "MAX_REPLY", 100)
+    def handler(request):
+        return httpx.Response(200, content=b"x" * 500)
+    c = TestClient(build_app(client=httpx.AsyncClient(transport=httpx.MockTransport(handler))))
+    assert c.get("/v1/overview").status_code == 502

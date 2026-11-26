@@ -10,3 +10,5 @@ services:
     envVars:
       - key: PYTHON_VERSION
         value: 3.12.8
+      - key: HOSTED_TRUST_PROXY
+        value: "1"
