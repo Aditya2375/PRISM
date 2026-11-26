@@ -60,3 +60,19 @@ def test_backup_and_state(w, tmp_path):
     assert code == 1 and "does not match its hash" in out
     w.svc._persist(); w.svc.store.snapshot() if hasattr(w.svc.store, "snapshot") else None
     assert run("state", "--file", w.svc.dir / "state.json", "--pub", sp)[0] == 0
+
+
+def test_backup_with_duplicate_member_names_is_refused(w, tmp_path):
+    import io
+    import tarfile
+    pub, _ = c.kem_keygen()
+    bk = tmp_path / "x.bak"; backup.create(w.svc, pub, bk)
+    dup = tmp_path / "dup.bak"
+    with tarfile.open(bk) as src, tarfile.open(dup, "w") as out:
+        members = list(src)
+        for m in members:
+            out.addfile(m, src.extractfile(m))
+        m0 = members[-1]
+        out.addfile(m0, io.BytesIO(src.extractfile(m0).read()))   # same name again
+    code, text = run("backup", "--file", dup, "--pub", w.svc.dir / "server_sign.pub")
+    assert code == 1 and "duplicate member" in text
