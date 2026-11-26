@@ -1,8 +1,9 @@
 """Append-only, hash-chained, signed audit log.
 
 Each entry commits to the previous one and is signed with the service's
-ML-DSA key, so deleting, reordering or editing any entry is detectable by
-anyone holding the service public key.
+ML-DSA key, so deleting, reordering or editing any entry in the middle is detectable by
+anyone holding the service public key. A head anchor file catches accidental truncation;
+only an externally stored head defends against an attacker who controls the whole directory.
 """
 from __future__ import annotations
 
@@ -24,8 +25,13 @@ def _entry_hash(body: dict[str, Any]) -> str:
     return c.sha256_hex(c.canonical(body))
 
 
-def verify_chain(entries: list[dict[str, Any]], service_pub: bytes) -> tuple[bool, str]:
-    """Check linkage, hashes and signatures. Returns (ok, reason)."""
+def verify_chain(entries: list[dict[str, Any]], service_pub: bytes, sig_from: int = 0) -> tuple[bool, str]:
+    """Check linkage, hashes and signatures. Returns (ok, reason).
+
+    Links and hashes are always checked for every entry. Signatures are checked from
+    ``sig_from`` on: entries before it are covered by a verified anchor entry whose hash
+    commits to the whole prefix.
+    """
     prev = GENESIS
     for i, e in enumerate(entries):
         try:
@@ -40,38 +46,51 @@ def verify_chain(entries: list[dict[str, Any]], service_pub: bytes) -> tuple[boo
         h = _entry_hash(body)
         if e.get("hash") != h:
             return False, f"entry {i}: content hash mismatch"
-        if not c.verify(service_pub, "audit", h.encode("ascii"), sig):
+        if i >= sig_from and not c.verify(service_pub, "audit", h.encode("ascii"), sig):
             return False, f"entry {i}: bad signature"
         prev = h
     return True, "ok"
 
 
-CHECKPOINT_EVERY = 8
-
-
-def verify_checkpoint(entries: list[dict[str, Any]], ckpt: dict[str, Any] | None, service_pub: bytes) -> tuple[bool, str, int | None]:
-    """A signed checkpoint pins (count, head hash). Catches tail truncation and rewrites before it."""
-    if ckpt is None:
-        return True, "ok", None
-    body = ckpt.get("body", {})
+def _anchor_ok(entry: dict[str, Any], anchor: dict[str, Any], service_pub: bytes) -> bool:
     try:
-        good = c.verify(service_pub, "checkpoint", c.canonical(body), c.b64d(ckpt["sig"]))
-    except (KeyError, c.CryptoError):
-        good = False
-    if not good:
-        return False, "checkpoint signature invalid", None
-    n = body["count"]
-    if len(entries) < n:
-        return False, f"log truncated: checkpoint covers {n} entries, found {len(entries)}", len(entries)
-    if n and entries[n - 1].get("hash") != body["head"]:
-        return False, f"entry {n - 1}: does not match signed checkpoint", n - 1
-    return True, "ok", None
+        return (entry["hash"] == anchor["hash"] and entry["seq"] == anchor["seq"]
+                and c.verify(service_pub, "audit", anchor["hash"].encode("ascii"), c.b64d(anchor["sig"])))
+    except (KeyError, c.CryptoError, TypeError):
+        return False
 
 
 def first_bad_seq(reason: str) -> int | None:
     import re
     m = re.search(r"entry (\d+)", reason)
     return int(m.group(1)) if m else None
+
+
+def check_log(entries: list[dict[str, Any]], anchor: dict[str, Any] | None, service_pub: bytes,
+              expect_head: str | None = None) -> tuple[bool, str]:
+    """Full verification: chain, anchor (the head pointer), and optionally an externally held head.
+
+    The anchor is a copy of the newest entry's own signature, rewritten after every append. It
+    catches truncation, a lost tail and a deleted anchor. It cannot stop an attacker who can write
+    the whole data directory from truncating the log AND rewriting the anchor to match; only a head
+    that is stored elsewhere (``expect_head``) closes that gap.
+    """
+    if entries and anchor is None:
+        return False, "head anchor is missing while the log has entries (tail may have been removed)"
+    sig_from = 0
+    if anchor is not None:
+        n = anchor.get("seq", -1) + 1 if isinstance(anchor.get("seq"), int) else -1
+        if n < 0 or len(entries) < n:
+            return False, f"log truncated: anchor covers {n} entries, found {len(entries)}"
+        if n and not _anchor_ok(entries[n - 1], anchor, service_pub):
+            return False, f"entry {max(n - 1, 0)}: does not match the signed head anchor"
+        sig_from = n  # prefix is committed by the verified anchor's hash chain
+    ok, why = verify_chain(entries, service_pub, sig_from)
+    if not ok:
+        return ok, why
+    if expect_head is not None and (entries[-1]["hash"] if entries else GENESIS) != expect_head:
+        return False, "log head does not match the externally recorded head"
+    return True, "ok"
 
 
 class AuditLog:
@@ -82,27 +101,31 @@ class AuditLog:
         self._lock = threading.Lock()
         self.entries: list[dict[str, Any]] = []
         self.recovered_torn_bytes = 0
-        self.ckpt_path = self.path.with_suffix(".ckpt")
+        self.ckpt_path = self.path.with_suffix(".head")
         if self.path.exists():
             self.entries = self._load()
             ok, why = self.verify()
             if not ok:
                 raise AuditError(f"audit log failed verification on startup: {why}")
+        elif self.ckpt_path.exists():
+            raise AuditError("audit log is missing but its head anchor exists")
 
-    def _read_ckpt(self) -> dict[str, Any] | None:
+    def _read_anchor(self) -> dict[str, Any] | None:
         import json
+        if not self.ckpt_path.exists():
+            return None
         try:
-            return json.loads(self.ckpt_path.read_text())
+            a = json.loads(self.ckpt_path.read_text())
+            return a if isinstance(a, dict) else {}
         except (OSError, ValueError):
-            return None if not self.ckpt_path.exists() else {"body": {}, "sig": ""}
+            return {}
 
-    def _write_ckpt(self) -> None:
+    def _write_anchor(self, entry: dict[str, Any]) -> None:
         import json
-        body = {"count": len(self.entries), "head": self.head}
-        ck = {"body": body, "sig": c.b64e(c.sign(self._sec, "checkpoint", c.canonical(body)))}
-        tmp = self.ckpt_path.with_suffix(".ckpt.tmp")
-        with open(tmp, "w") as fh:
-            fh.write(json.dumps(ck))
+        tmp = self.ckpt_path.with_suffix(".head.tmp")
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w") as fh:
+            fh.write(json.dumps({"seq": entry["seq"], "hash": entry["hash"], "sig": entry["sig"]}))
             fh.flush()
             os.fsync(fh.fileno())
         os.replace(tmp, self.ckpt_path)
@@ -118,7 +141,7 @@ class AuditLog:
                     if not raw.endswith(b"\n"):
                         raise ValueError("unterminated line")
                     out.append(json.loads(raw))
-                except ValueError:
+                except (ValueError, RecursionError):
                     # A torn final write (crash mid-append). Only the very last line may be torn;
                     # drop it and keep the last complete, verified entry.
                     rest = fh.read()
@@ -136,6 +159,7 @@ class AuditLog:
         return self.entries[-1]["hash"] if self.entries else GENESIS
 
     def append(self, ts: float, etype: str, actor: str, data: dict[str, Any]) -> dict[str, Any]:
+        import json
         with self._lock:
             body = {
                 "seq": len(self.entries),
@@ -149,24 +173,26 @@ class AuditLog:
             entry = dict(body)
             entry["hash"] = h
             entry["sig"] = c.b64e(c.sign(self._sec, "audit", h.encode("ascii")))
+            line = (json.dumps(entry, sort_keys=True) + "\n").encode("utf-8")
             self.path.parent.mkdir(parents=True, exist_ok=True)
-            import json
-
-            with open(self.path, "a", encoding="utf-8") as fh:
-                fh.write(json.dumps(entry, sort_keys=True) + "\n")
-                fh.flush()
-                os.fsync(fh.fileno())
+            fd = os.open(self.path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+            good = os.fstat(fd).st_size
+            try:
+                with os.fdopen(fd, "ab") as fh:
+                    fh.write(line)
+                    fh.flush()
+                    os.fsync(fh.fileno())
+            except OSError:
+                # e.g. disk full: never leave a torn line in the middle of the log
+                with open(self.path, "r+b") as w:
+                    w.truncate(good)
+                raise
             self.entries.append(entry)
-            if len(self.entries) % CHECKPOINT_EVERY == 0:
-                self._write_ckpt()
+            self._write_anchor(entry)
             return entry
 
     def since(self, seq: int) -> list[dict[str, Any]]:
         return self.entries[max(0, seq):]
 
-    def verify(self) -> tuple[bool, str]:
-        ok, why = verify_chain(self.entries, self.pub)
-        if not ok:
-            return ok, why
-        ok, why, _ = verify_checkpoint(self.entries, self._read_ckpt(), self.pub)
-        return ok, why
+    def verify(self, expect_head: str | None = None) -> tuple[bool, str]:
+        return check_log(self.entries, self._read_anchor(), self.pub, expect_head)

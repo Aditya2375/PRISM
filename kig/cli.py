@@ -41,6 +41,7 @@ def main(argv: list[str] | None = None) -> int:
             p.add_argument("--data", required=True)
     p = sub.add_parser("verify-log", help="verify the signed key-event log offline")
     p.add_argument("--data", required=True)
+    p.add_argument("--expect-head", default=None, help="head hash recorded elsewhere; detects tail truncation")
     p = sub.add_parser("call")
     p.add_argument("--url", required=True)
     p.add_argument("--key", required=True)
@@ -50,23 +51,21 @@ def main(argv: list[str] | None = None) -> int:
 
     if a.op == "verify-log":
         from pathlib import Path
-        from .audit import first_bad_seq, verify_chain, verify_checkpoint
+        from .audit import check_log, first_bad_seq
         d = Path(a.data)
         pub = (d / "server_sign.pub").read_bytes()
         try:
             entries = [json.loads(l) for l in (d / "audit.jsonl").read_bytes().split(b"\n") if l.strip()]
-        except ValueError:
+        except (ValueError, RecursionError):
             print("FAILED: unparseable line in log")
             return 1
-        ok, why = verify_chain(entries, pub)
-        if ok:
-            ck = None
-            if (d / "audit.ckpt").exists():
-                try:
-                    ck = json.loads((d / "audit.ckpt").read_text())
-                except ValueError:
-                    ck = {"body": {}, "sig": ""}
-            ok, why, _ = verify_checkpoint(entries, ck, pub)
+        anchor = None
+        if (d / "audit.head").exists():
+            try:
+                anchor = json.loads((d / "audit.head").read_text())
+            except ValueError:
+                anchor = {}
+        ok, why = check_log(entries, anchor, pub, a.expect_head)
         bad = first_bad_seq(why)
         print(f"{'OK' if ok else 'FAILED'}: {why} ({len(entries)} entries)" + (f" first_bad_seq={bad}" if not ok and bad is not None else ""))
         return 0 if ok else 1

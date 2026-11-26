@@ -49,7 +49,8 @@ def test_tampered_file_refuses_to_load(tmp_path):
 
 # ---- hostile log content and tampering (cut-list from the threat model)
 import json as _json
-from kig.audit import AuditLog, AuditError, CHECKPOINT_EVERY, verify_chain
+from kig.audit import AuditLog, AuditError, verify_chain
+CHECKPOINT_EVERY = 8
 from kig import crypto as _c
 
 
@@ -101,3 +102,26 @@ def test_verify_log_cli_reports_first_bad_seq(tmp_path, capsys):
     p.write_bytes(b"\n".join(lines))
     assert cli.main(["verify-log", "--data", str(tmp_path)]) == 1
     assert "first_bad_seq=6" in capsys.readouterr().out
+
+
+def test_deleted_anchor_and_external_head(tmp_path):
+    lg, pub, sec = _log(tmp_path, 5)
+    head = lg.head
+    assert lg.verify(expect_head=head) == (True, "ok")
+    assert lg.verify(expect_head="0" * 64)[0] is False
+    (tmp_path / "audit.head").unlink()
+    with pytest.raises(AuditError):
+        AuditLog(tmp_path / "audit.jsonl", sec, pub)
+
+
+def test_failed_append_leaves_no_torn_line(tmp_path, monkeypatch):
+    lg, pub, sec = _log(tmp_path, 3)
+    size = (tmp_path / "audit.jsonl").stat().st_size
+    import os as _os
+    real = _os.fsync
+    monkeypatch.setattr("kig.audit.os.fsync", lambda fd: (_ for _ in ()).throw(OSError(28, "No space left")))
+    with pytest.raises(OSError):
+        lg.append(9.0, "t", "a", {})
+    monkeypatch.setattr("kig.audit.os.fsync", real)
+    assert (tmp_path / "audit.jsonl").stat().st_size == size
+    assert AuditLog(tmp_path / "audit.jsonl", sec, pub).verify()[0]
