@@ -798,3 +798,23 @@ def test_z2_web_enrol_limited_must_be_a_real_boolean(tmp_path):
         assert resp.status_code == 400 and f"asha-tab-{i}" not in svc.state["devices"]
     ok = w.post("/devices/enroll", json={"pub": Device.generate("asha-tab-ok", "asha").public_args(), "unverified": True, "limited": True}, headers=H)
     assert ok.status_code == 200 and svc.state["devices"]["asha-tab-ok"]["limited"] is True
+
+
+def test_m1_a_young_second_admin_cannot_remove_an_admins_limited_phone_and_the_alert_fires_for_any_remover(tmp_path, capsys):
+    clock = type("C", (), {"t": 1_800_000_000.0, "__call__": lambda self: self.t})()
+    svc, laptop = boot(tmp_path / "d", clock=clock)
+    ac = Client(laptop, svc.handle, clock)
+    phone = Device.generate("adm-phone", "adm")
+    ac.call("enroll_device", **phone.public_args(), limited=True)
+    ac.call("create_user", user="evil", role="admin")
+    evil = Device.generate("evil-1", "evil")
+    ac.call("enroll_device", **evil.public_args())
+    ec = Client(evil, svc.handle, clock)
+    with pytest.raises(Denied) as e:
+        ec.call("revoke_device", device="adm-phone")
+    assert e.value.code == "cooling_off" and svc.state["devices"]["adm-phone"]["status"] == "active"
+    clock.t += S.COOLING_OFF_S + 1
+    ec.call("revoke_device", device="adm-phone")                   # once old enough it is allowed, and it is alerted
+    al = [e["data"] for e in svc.audit.entries if e["type"] == "alert.raised"]
+    assert any(a["rule"] == "R5-ADMIN-LIMITED-DEVICE-REMOVED" for a in al)
+    assert "R5-ADMIN-LIMITED-DEVICE-REMOVED" in capsys.readouterr().err

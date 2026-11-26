@@ -813,6 +813,8 @@ class GuardService:
                            "forbidden", "an admin device can only be removed by another admin user, or offline by the "
                                         "operator (kig revoke-device); enrol phones with --limited so the admin can remove them")
             self._require_settled(dev, kind)
+        elif self.state["users"].get(d["user"], {}).get("role") == "admin" and d.get("limited") and target != dev:
+            self._require_settled(dev, kind)      # a young device (a thief's new admin) cannot remove the owner's phone at once
         # the last active device of the last active admin can never be removed, or nobody could enrol or recover
         still = [x for x, v in self.state["devices"].items() if x != target and v["status"] == "active"
                  and not v.get("limited")
@@ -826,8 +828,8 @@ class GuardService:
         self._log(f"device.{'lost' if kind == 'lost' else 'revoked'}", dev,
                   {"device": target, "user": d["user"], "by": user,
                    "reason": str(args.get("reason", ""))[:200], "files_needing_rotation": pending,
-                   "admin_limited_by_sibling": bool(d.get("limited") and d["user"] == user and target != dev
-                                                    and self.state["users"].get(d["user"], {}).get("role") == "admin")})
+                   "admin_limited_removed": bool(d.get("limited") and target != dev
+                                                 and self.state["users"].get(d["user"], {}).get("role") == "admin")})
         return {"ok": True, "files_needing_rotation": pending}
 
     def cmd_revoke_device(self, dev, user, role, args):

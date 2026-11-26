@@ -1,5 +1,7 @@
 # P.R.I.S.M.
 
+In this document `kig X` means `python -m kig.cli X`.
+
 Post-quantum Resilient Identity & Security Management. Package `kig` is the code name of P.R.I.S.M. (see docs/CRYPTO.md). Core design notes: `docs/CORE.md`; cryptography and claims: `docs/CRYPTO.md`.
 
 DevForge Yugaantar, Track 4: Post-Quantum Security ("Trust, But Verify").

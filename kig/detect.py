@@ -55,12 +55,12 @@ class Detector:
 
         if t in ("device.revoked", "device.lost"):
             self.removed_at[d["device"]] = seq
-        if t in ("device.revoked", "device.lost") and d.get("admin_limited_by_sibling"):
+        if t in ("device.revoked", "device.lost") and d.get("admin_limited_removed"):
             alerts.append(
                 Alert(
                     "R5-ADMIN-LIMITED-DEVICE-REMOVED",
                     "high",
-                    f"A limited device ({d.get('device')}) of admin {d.get('user')} was removed by another device of the same admin ({actor}). "
+                    f"A limited device ({d.get('device')}) of admin {d.get('user')} was removed by {actor}. "
                     "Expected when you reported a lost phone. If it was not you, the acting device may be stolen: the host "
                     "operator can remove it with `kig revoke-device` and recover with `kig recover-admin`.",
                     [seq],
