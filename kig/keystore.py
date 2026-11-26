@@ -8,12 +8,14 @@ With any store the service process still holds the key in memory while it runs.
 """
 from __future__ import annotations
 
+import logging
 import re
 from pathlib import Path
 from typing import Protocol
 
 from . import vault
 
+log = logging.getLogger(__name__)
 _NAME = re.compile(r"[a-z0-9][a-z0-9_.-]{0,63}")
 
 
@@ -42,7 +44,7 @@ class MemoryKeyStore:
 class FileKeyStore:
     def __init__(self, directory: str | Path, passphrase: str | None = None) -> None:
         self.dir = Path(directory)
-        self.dir.mkdir(parents=True, exist_ok=True)
+        self.dir.mkdir(parents=True, exist_ok=True, mode=0o700)
         self.passphrase = passphrase if passphrase is not None else vault.passphrase_from_env()
 
     def _path(self, name: str) -> Path:
@@ -56,5 +58,7 @@ class FileKeyStore:
         return vault.open_(raw, self.passphrase, f"prism/keystore/{name}") if vault.is_sealed(raw) else raw
 
     def put(self, name: str, secret: bytes) -> None:
+        if not self.passphrase:
+            log.warning("FileKeyStore: no passphrase set, key %r is stored unencrypted (file mode 0600 only)", name)
         blob = vault.seal(secret, self.passphrase, f"prism/keystore/{name}") if self.passphrase else secret
         vault.write_atomic(self._path(name), blob, 0o600)

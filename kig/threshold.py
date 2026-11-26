@@ -91,29 +91,51 @@ def combine(shares: list[bytes]) -> bytes:
             unreadable.append(f"input #{pos}")
     if not ds:
         raise ThresholdError("no readable shares" + (f" ({', '.join(unreadable)} unreadable)" if unreadable else ""))
-    f = ds[0]
     ident = lambda d: (d["set"], d["k"], d["n"], d["sealed"], d["nonce"])  # noqa: E731
-    if any(ident(d) != ident(f) for d in ds):
-        raise ThresholdError("shares are from different sets")
-    seen, uniq = set(), []
+    groups: dict[tuple, list[dict]] = {}
     for d in ds:
-        if d["i"] not in seen:
-            seen.add(d["i"]); uniq.append(d)
+        groups.setdefault(ident(d), []).append(d)
+    bad_all = list(unreadable)
+    qualified = []
+    for g in groups.values():
+        seen, uniq = set(), []
+        for d in g:
+            if d["i"] not in seen:
+                seen.add(d["i"]); uniq.append(d)
+        good = [d for d in uniq if d["_good"]]
+        if len(good) >= g[0]["k"]:
+            qualified.append((g[0], good, [d["i"] for d in uniq if not d["_good"]]))
+        else:
+            bad_all += [f"index {d['i']}" for d in uniq if not d["_good"]]
+    if not qualified:
+        raise ThresholdError("no set has enough distinct, intact shares"
+                             + (f"; damaged or unreadable: {bad_all}" if bad_all else ""))
+    if len(qualified) > 1:
+        raise ThresholdError("shares from more than one split each reach their threshold; offer one set only")
+    f, good, bad = qualified[0]
+    ignored = sum(len(g) for g in groups.values()) - len(good)
     k = f["k"]
-    bad = [d["i"] for d in uniq if not d["_good"]] + unreadable
-    good = [d for d in uniq if d["_good"]]
-    if len(good) < k:
-        raise ThresholdError(f"need {k} intact shares, got {len(good)} distinct and intact"
-                             + (f"; damaged share index(es): {bad}" if bad else ""))
     hdr = {"v": 1, "set": f["set"], "k": k, "n": f["n"]}
-    for tries, combo in enumerate(itertools.combinations(good, k)):
-        if tries >= MAX_TRIES:
+    tried: set[tuple] = set()
+    attempts = 0
+    for r in range(0, len(good) - k + 1):                  # leave out r shares, take the first k of the rest
+        for out in itertools.combinations(range(len(good)), r):
+            rest = [d for j, d in enumerate(good) if j not in out][:k]
+            key = tuple(sorted(d["i"] for d in rest))
+            if key in tried:
+                continue
+            tried.add(key)
+            attempts += 1
+            if attempts > MAX_TRIES:
+                break
+            try:
+                wrap = (Shamir.combine([(d["i"], d["_share"][:16]) for d in rest]) +
+                        Shamir.combine([(d["i"], d["_share"][16:]) for d in rest]))
+                return AESGCM(wrap).decrypt(c.b64d(f["nonce"]), c.b64d(f["sealed"]), c.canonical(hdr))
+            except (InvalidTag, ValueError, c.CryptoError):
+                continue
+        if attempts > MAX_TRIES:
             break
-        try:
-            wrap = (Shamir.combine([(d["i"], d["_share"][:16]) for d in combo]) +
-                    Shamir.combine([(d["i"], d["_share"][16:]) for d in combo]))
-            return AESGCM(wrap).decrypt(c.b64d(f["nonce"]), c.b64d(f["sealed"]), c.canonical(hdr))
-        except (InvalidTag, ValueError, c.CryptoError):
-            continue
     raise ThresholdError("shares do not combine: a share was altered or is not from this set"
-                         + (f" (damaged by fingerprint: {bad})" if bad else ""))
+                         + (f" (damaged by fingerprint: {bad + bad_all})" if bad or bad_all else "")
+                         + (f"; {ignored} offered share(s) ignored" if ignored else ""))

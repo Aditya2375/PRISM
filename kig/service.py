@@ -161,23 +161,28 @@ class GuardService:
             self._persist()
 
     def _load_server_key(self) -> None:
+        import fcntl
+        self.dir.mkdir(parents=True, exist_ok=True)
+        with open(self.dir / ".keylock", "a") as lk:       # two first starts must not each make a key
+            fcntl.flock(lk, fcntl.LOCK_EX)
+            self._load_server_key_locked()
+
+    def _load_server_key_locked(self) -> None:
         sec_p, pub_p = self.dir / "server_sign.key", self.dir / "server_sign.pub"
         pw = vault.passphrase_from_env()
         if self.keystore is not None:
             sec = self.keystore.get("server-sign")
-            if sec is not None and pub_p.exists():
-                self._sec, self.pub = sec, pub_p.read_bytes()
-            elif sec is None and not pub_p.exists():
-                self.pub, self._sec = c.sig_keygen()
-                self.keystore.put("server-sign", self._sec)
+            if sec is None and pub_p.exists():
+                raise StateCorrupt("the key store has no signing key but server_sign.pub exists; refusing to generate "
+                                   "a new one. Restore the key or a verified backup")
+            if sec is None:
+                self.pub, sec = c.sig_keygen()
+                self.keystore.put("server-sign", sec)       # secret first, public file second
                 _atomic_write(pub_p, self.pub, 0o644)
-            else:
-                raise StateCorrupt("the key store and server_sign.pub disagree about whether a signing key exists; "
-                                   "refusing to generate a new one. Restore the missing part or a verified backup")
+            self._sec = sec
         elif sec_p.exists() and pub_p.exists():
             raw = sec_p.read_bytes()
             self._sec = vault.open_(raw, pw, "prism/server-key") if vault.is_sealed(raw) else raw
-            self.pub = pub_p.read_bytes()
         elif sec_p.exists() or pub_p.exists():
             raise StateCorrupt("exactly one of server_sign.key / server_sign.pub exists; refusing to generate a new "
                                "signing key over it. Restore the missing file or restore from a verified backup")
@@ -185,6 +190,17 @@ class GuardService:
             self.pub, self._sec = c.sig_keygen()
             _atomic_write(sec_p, vault.seal(self._sec, pw, "prism/server-key") if pw else self._sec)
             _atomic_write(pub_p, self.pub, 0o644)
+        # the public file is a copy: it must belong to the secret, or the service would sign under a key nobody trusts
+        try:
+            derived = c.sig_pub_from_secret(self._sec)
+        except Exception:  # noqa: BLE001
+            raise StateCorrupt("the stored signing key is not a valid ML-DSA-65 key") from None
+        if not pub_p.exists():
+            _atomic_write(pub_p, derived, 0o644)
+        elif pub_p.read_bytes() != derived:
+            raise StateCorrupt("server_sign.pub does not belong to the stored signing key; refusing to start. "
+                               "Restore the matching public key or a verified backup")
+        self.pub = derived
 
     def _crash(self, point: str) -> None:
         if self.crash_at == point:

@@ -51,9 +51,11 @@ def main(argv: list[str] | None = None) -> int:
     q.add_argument("-k", type=int, required=True)
     q.add_argument("-n", type=int, required=True)
     q.add_argument("--out-dir", required=True)
+    q.add_argument("--force", action="store_true", help="replace existing share files")
     q = bk.add_parser("combine")
     q.add_argument("--shares", nargs="+", required=True)
     q.add_argument("--out", required=True)
+    q.add_argument("--force", action="store_true", help="replace an existing output file")
     p = sub.add_parser("doctor", help="check a data directory: state, audit chain, blobs, permissions")
     p.add_argument("--data", required=True)
     p = sub.add_parser("enroll", help="enrol a new device from its public-key JSON, after comparing its fingerprint")
@@ -93,17 +95,23 @@ def main(argv: list[str] | None = None) -> int:
                     print("refused: the key file is passphrase-sealed; split the unsealed key", file=sys.stderr)
                     return 2
                 out = Path(a.out_dir)
-                out.mkdir(parents=True, exist_ok=True)
+                out.mkdir(parents=True, exist_ok=True, mode=0o700)
+                if not a.force and any((out / f"share-{i}.json").exists() for i in range(1, 256)):
+                    print("refused: share files already exist there (pass --force to replace them)", file=sys.stderr)
+                    return 2
                 for idx, sh in enumerate(threshold.split(secret, a.k, a.n), 1):
-                    vault.write_atomic(out / f"share-{idx}.json", sh, 0o600)
+                    vault.write_atomic(out / f"share-{idx}.json", sh, 0o600, exclusive=not a.force)
                     print(f"share-{idx}.json  fingerprint {threshold.fingerprint(sh)}")
                 print(f"{a.k} of {a.n} shares are needed. Record the fingerprints separately; give each share to a different holder.")
             else:
                 key = threshold.combine([Path(x).read_bytes() for x in a.shares])
-                vault.write_atomic(a.out, key, 0o600)
+                vault.write_atomic(a.out, key, 0o600, exclusive=not a.force)
                 print(f"recovered {len(key)} bytes to {a.out}")
         except threshold.ThresholdError as e:
             print(f"refused: {e}", file=sys.stderr)
+            return 2
+        except FileExistsError:
+            print("refused: the output file already exists (pass --force to replace it)", file=sys.stderr)
             return 2
         return 0
     if a.op == "doctor":

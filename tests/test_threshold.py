@@ -71,7 +71,7 @@ def test_one_damaged_share_is_named_and_extra_shares_recover():
     d = json.loads(sh[0]); b = bytearray(c.b64d(d["share"])); b[0] ^= 1; d["share"] = c.b64e(bytes(b))
     sh[0] = json.dumps(d).encode()
     assert t.combine(sh) == sec
-    with pytest.raises(t.ThresholdError, match=r"damaged share index\(es\): \[1\]"):
+    with pytest.raises(t.ThresholdError, match=r"damaged or unreadable"):
         t.combine(sh[:3])
 
 

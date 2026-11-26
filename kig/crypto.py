@@ -155,6 +155,10 @@ def sig_keygen() -> tuple[bytes, bytes]:
     return k.public_key().public_bytes_raw(), k.private_bytes_raw()
 
 
+def sig_pub_from_secret(sec: bytes) -> bytes:
+    return mldsa.MLDSA65PrivateKey.from_seed_bytes(sec).public_key().public_bytes_raw()
+
+
 def _domain(purpose: str, msg: bytes) -> bytes:
     return b"kig/v1/" + purpose.encode("ascii") + b"\x00" + msg
 

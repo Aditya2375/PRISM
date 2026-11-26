@@ -33,3 +33,28 @@ def test_file_keystore_roundtrip_sealed_and_plain(tmp_path):
 def test_bad_names_refused():
     with pytest.raises(ValueError):
         MemoryKeyStore().get("../x")
+
+
+def test_file_mode_pub_swap_is_refused_and_missing_pub_is_rederived(tmp_path):
+    from kig import crypto as c
+    a = GuardService(tmp_path)
+    (tmp_path / "server_sign.pub").unlink()
+    with pytest.raises(StateCorrupt):
+        GuardService(tmp_path)                      # one file missing in file mode: still refuse
+    (tmp_path / "server_sign.pub").write_bytes(c.sig_keygen()[0])
+    with pytest.raises(StateCorrupt, match="does not belong"):
+        GuardService(tmp_path)
+    assert a.pub != (tmp_path / "server_sign.pub").read_bytes()
+
+
+def test_write_atomic_exclusive_and_symlink(tmp_path):
+    from kig import vault
+    p = tmp_path / "f"
+    vault.write_atomic(p, b"1", exclusive=True)
+    with pytest.raises(FileExistsError):
+        vault.write_atomic(p, b"2", exclusive=True)
+    assert p.read_bytes() == b"1"
+    (tmp_path / "victim").write_bytes(b"keep")
+    (tmp_path / "f.tmp").symlink_to(tmp_path / "victim")
+    vault.write_atomic(p, b"3")
+    assert (tmp_path / "victim").read_bytes() == b"keep" and p.read_bytes() == b"3"

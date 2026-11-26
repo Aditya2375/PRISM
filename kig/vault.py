@@ -79,15 +79,30 @@ def open_(blob: bytes, passphrase: str | None, label: str) -> bytes:
         raise VaultError("key file is damaged") from None
 
 
-def write_atomic(path: str | Path, data: bytes, mode: int = 0o600) -> None:
+def write_atomic(path: str | Path, data: bytes, mode: int = 0o600, exclusive: bool = False) -> None:
+    """Write via a randomly named temp file (never follows a symlink), fsync, then rename.
+
+    With exclusive=True an existing target is never replaced: FileExistsError is raised instead.
+    """
     p = Path(path)
-    tmp = p.with_name(p.name + ".tmp")
-    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, mode)
-    with os.fdopen(fd, "wb") as fh:
-        fh.write(data)
-        fh.flush()
-        os.fsync(fh.fileno())
-    os.replace(tmp, p)
+    tmp = p.with_name(f".{p.name}.{os.urandom(6).hex()}.tmp")
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), mode)
+    try:
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(data)
+            fh.flush()
+            os.fsync(fh.fileno())
+        if exclusive:
+            os.link(tmp, p)             # fails if the target exists
+            os.unlink(tmp)
+        else:
+            os.replace(tmp, p)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except FileNotFoundError:
+            pass
+        raise
     dfd = os.open(p.parent, os.O_RDONLY)
     try:
         os.fsync(dfd)

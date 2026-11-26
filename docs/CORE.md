@@ -240,9 +240,11 @@ recovers the key. `kig/threshold.py` contains no secret-sharing maths. A random 
 with AES-256-GCM (`cryptography`); the wrapping key is split as two 16-byte halves with PyCryptodome's Shamir
 (`Crypto.Protocol.SecretSharing`, pinned in `requirements.txt`) at the same indices, so the AES key keeps its full 256
 bits. Fields are validated before Shamir sees them (a share index of -1 once made the library loop forever). Each
-share carries a fingerprint of its own bytes: damaged shares are named and skipped, and combine tries other subsets of k
-(at most 200) when more than k shares are offered. Shares from different splits, duplicates, and too few intact shares
-are refused. Limits: the sealed secret is repeated in every share; no verifiable sharing, so a forged share with a
+share carries a fingerprint of its own bytes. The fingerprint catches accidents only, since anyone can recompute it. Damaged
+shares are named and skipped; when more than k shares are offered and one fails to open, combine leaves out one share at
+a time, then two, and so on (at most 200 attempts), which survives a few bad holders but not many. A stray share from
+another split is ignored if exactly one set has enough intact shares; if two sets do, it refuses. The CLI refuses to
+overwrite existing share files or an existing output key unless `--force` is given, and creates the share directory 0700. Limits: the sealed secret is repeated in every share; no verifiable sharing, so a forged share with a
 matching fingerprint is found only by trying subsets; the library is one we use and did not audit.
 
 ## Key storage interface
@@ -250,5 +252,8 @@ matching fingerprint is found only by trying subsets; the library is one we use 
 `kig/keystore.py` defines `KeyStore` (`get(name)`, `put(name, secret)`). `GuardService(dir, keystore=...)` then keeps
 the signing key there instead of in `server_sign.key`. We ship `FileKeyStore` (0600 files, sealed by the passphrase
 vault when a passphrase is set) and `MemoryKeyStore` (tests). We ship no HSM or KMS driver: the interface is the seam
-for one, and it is not a claim of hardware protection. If the store and `server_sign.pub` disagree about whether a key
-exists, start-up refuses rather than generating a new key. Backup and the CLI still use their own key files.
+for one, and it is not a claim of hardware protection. On every start the public key is derived from the stored signing seed and `server_sign.pub` must equal it,
+otherwise start-up refuses (StateCorrupt); with a key store a missing public file is rewritten from the seed. If the
+store has no key but the public file exists, start-up refuses rather than generating a new key. First creation runs under
+an exclusive file lock (`.keylock`), the secret is stored before the public file, and temp files are random, exclusive
+and never follow symlinks. `FileKeyStore` without a passphrase stores the key unencrypted (mode 0600) and logs a warning. Backup and the CLI still use their own key files.
