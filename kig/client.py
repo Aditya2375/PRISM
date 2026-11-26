@@ -36,6 +36,20 @@ def _wrap_ctx(file_id: str, device_id: str, epoch: int) -> bytes:
     return f"kig/v1/wrap|{file_id}|{device_id}|{epoch}".encode()
 
 
+def device_fingerprint(device: str, user: str, sign_pub: bytes, kem_pub: bytes) -> str:
+    """SHA-256 over the device id, user and both public keys, as 8 groups of 8 hex digits.
+
+    The enrolling person reads it off their own device and the admin compares it before enrolling, over a
+    channel the server does not control (voice, in person). It is a plain hash of public data, not a new scheme.
+    """
+    import hashlib
+    h = hashlib.sha256()
+    for part in (b"PRISM-1 device fingerprint", device.encode(), user.encode(), sign_pub, kem_pub):
+        h.update(len(part).to_bytes(4, "big")); h.update(part)
+    x = h.hexdigest()
+    return "-".join(x[k:k + 8] for k in range(0, 64, 8))
+
+
 @dataclass
 class Device:
     device_id: str
@@ -50,6 +64,9 @@ class Device:
         sp, ss = c.sig_keygen()
         kp, ks = c.kem_keygen()
         return cls(device_id, user, sp, ss, kp, ks)
+
+    def fingerprint(self) -> str:
+        return device_fingerprint(self.device_id, self.user, self.sign_pub, self.kem_pub)
 
     def public_args(self) -> dict[str, str]:
         return {"device": self.device_id, "user": self.user,

@@ -151,3 +151,13 @@ Put, fetch and rotate stay flat as the store grows (journaled state). Backup and
 and their memory grows with the number of files, because the sealed state metadata (about 7 KB per file with four
 devices) is built in memory. Blob bytes are streamed and do not add to peak memory. Treat the memory column as
 a known limit for stores beyond a few thousand files.
+
+## Enrolment fingerprint
+
+`Device.fingerprint()` is a SHA-256 over the device id, user and both public keys (length-prefixed), printed as
+8 groups of 8 hex digits. The enrolling person reads it from their own device. The admin passes it as
+`expect_fingerprint` to `enroll_device`, and the service refuses with `fingerprint_mismatch` if the keys it
+received hash differently, which is what a swap of keys in transit produces. The fingerprint and whether it was
+checked are written to the audit entry. The check only helps if the fingerprint is compared over a channel the
+attacker does not control, and it is optional: without `expect_fingerprint` the enrolment is recorded as
+`verified: false`. The owner-signed manifest and ACL are not built yet.

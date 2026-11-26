@@ -585,6 +585,11 @@ class GuardService:
             raise Denied("bad_request", "missing keys", 400) from None
         if len(kp) != c.KEM_PQ_PUB + c.X_LEN or len(sp) != c.SIG_PUB:
             raise Denied("bad_request", "wrong key size", 400)
+        from .client import device_fingerprint
+        fp = device_fingerprint(new_dev, target, sp, kp)
+        expect = args.get("expect_fingerprint")
+        if expect is not None and expect != fp:
+            raise Denied("fingerprint_mismatch", "key fingerprint differs from the one the admin verified", 409)
         if target not in self.state["users"] or not self.state["users"][target]["active"]:
             raise Denied("bad_request", "unknown or disabled user", 400)
         if new_dev in self.state["devices"]:
@@ -596,8 +601,9 @@ class GuardService:
         for f in self.state["files"].values():
             if target in f["acl"]:
                 f["needs_rotation"] = True   # the new device holds no wrap until the owner or an admin re-keys
-        self._log("device.enrolled", dev, {"user": target, "device": new_dev, "by": user})
-        return {"ok": True}
+        self._log("device.enrolled", dev, {"user": target, "device": new_dev, "by": user,
+                                              "fingerprint": fp, "verified": expect is not None})
+        return {"ok": True, "fingerprint": fp}
 
     def _remove(self, dev, user, role, args, kind):
         target = _valid_id(args.get("device"))
