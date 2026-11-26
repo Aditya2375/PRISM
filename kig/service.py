@@ -28,6 +28,7 @@ from .detect import Alert, Detector
 SKEW_S = 30
 GRACE_S = 60  # rotation cutoff: the previous key version stays readable this long for in-flight transfers
 MAX_FILE_BYTES = 5 * 1024 * 1024
+READ_ONLY_CMDS = {"fetch", "whoami", "eligible", "list_files"}
 ROLES = ("admin", "member")
 ID_CHARS = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_.")
 
@@ -70,7 +71,10 @@ def _atomic_write(path: Path, data: bytes, mode: int = 0o600, hook: Callable[[],
 
 
 class GuardService:
-    def __init__(self, data_dir: str | Path, clock: Callable[[], float] = time.time):
+    def __init__(self, data_dir: str | Path, clock: Callable[[], float] = time.time,
+                 name: str = "primary", read_only: bool = False):
+        self.name = name
+        self.read_only = read_only
         self.dir = Path(data_dir)
         self.dir.mkdir(parents=True, exist_ok=True)
         self.clock = clock
@@ -83,6 +87,8 @@ class GuardService:
         self._check_not_truncated()
         self.detector = Detector()
         self.locks: dict[str, float] = {}
+        self.epoch_floor: dict[str, tuple[int, float]] = {}  # replica: newest epoch seen via signed certificate
+        self.snapshot_version = -1
         self.nonces: dict[str, float] = {}
         self._src = "local"
         self._lock_logged: set[str] = set()
@@ -299,6 +305,9 @@ class GuardService:
         try:
             cmd, dev_id = env["cmd"], env["device"]
             ts, nonce, args = env["ts"], env["nonce"], env["args"]
+            aud = env.get("aud", "primary")
+            if not isinstance(aud, str) or len(aud) > 64:
+                raise KeyError
             sig = c.b64d(env["sig"])
             if not (isinstance(cmd, str) and isinstance(dev_id, str) and isinstance(nonce, str)):
                 raise KeyError
@@ -323,9 +332,14 @@ class GuardService:
             self._deny("auth.unknown_device", "unknown", {"device": dev_id[:64], "cmd": cmd[:32]},
                        "unauthorized", "unknown device")
         body = {k: env[k] for k in ("cmd", "device", "ts", "nonce", "args")}
+        if "aud" in env:
+            body["aud"] = env["aud"]
         if not c.verify(c.b64d(dev["sign_pub"]), "cmd", c.canonical(body), sig):
             self._deny("auth.bad_signature", dev_id, {"device": dev_id, "cmd": cmd[:32]},
                        "unauthorized", "bad signature")
+        if aud != self.name:
+            self._deny("auth.wrong_audience", dev_id, {"device": dev_id, "cmd": cmd, "aud": aud[:64]},
+                       "wrong_audience", "request was signed for a different node")
         if abs(now - ts) > SKEW_S or ts < self.boot:
             self._deny("auth.stale", dev_id, {"device": dev_id, "cmd": cmd, "skew": round(now - ts, 1)},
                        "stale", "timestamp outside the allowed window")
@@ -351,6 +365,8 @@ class GuardService:
         fn = getattr(self, f"cmd_{cmd}", None)
         if fn is None or cmd.startswith("_"):
             raise Denied("bad_request", "unknown command", 400)
+        if self.read_only and cmd not in READ_ONLY_CMDS:
+            raise Denied("read_only", f"node {self.name} is a read-only replica; send writes to the primary", 421)
         try:
             result = fn(dev_id, dev["user"], user["role"], args)
             self._persist()
@@ -537,6 +553,11 @@ class GuardService:
             raise Denied("bad_request", "epoch must be an integer", 400)
         if want is not None and want != f["epoch"]:
             return self._fetch_previous(dev, user, fid, f, want)
+        floor = self.epoch_floor.get(fid)
+        if floor and floor[0] > f["epoch"] and self.clock() - floor[1] > GRACE_S:
+            self._deny("access.denied", dev, {"device": dev, "user": user, "file": fid, "action": "fetch",
+                                              "why": f"replica is behind: epoch {floor[0]} exists, cutoff passed"},
+                       "stale_replica", "this node has not yet received the current key version")
         wrap = f["wraps"].get(dev)
         if wrap is None:
             self._deny("access.denied", dev, {"device": dev, "user": user, "file": fid,
@@ -621,3 +642,65 @@ class GuardService:
             "audit_head": self.audit.head,
             "audit_len": len(self.audit.entries),
         }
+
+    # ------------------------------------------------------- replication (cluster)
+
+    def _cert(self, body: dict[str, Any]) -> dict[str, Any]:
+        return {"body": body, "sig": c.b64e(c.sign(self._sec, "cert", c.canonical(body)))}
+
+    def certs_from_entries(self, entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Signed revocation / epoch certificates for audit entries (push or pull)."""
+        out = []
+        for e in entries:
+            d, t = e["data"], e["type"]
+            if t in ("device.revoked", "device.lost"):
+                out.append(self._cert({"kind": "revoke", "device": d["device"], "seq": e["seq"], "ts": e["ts"]}))
+            elif t == "user.disabled":
+                for dev in self._devices_of(d["user"]):
+                    out.append(self._cert({"kind": "revoke", "device": dev, "seq": e["seq"], "ts": e["ts"]}))
+            elif t == "file.rotated":
+                out.append(self._cert({"kind": "epoch", "file": d["file"], "epoch": d["epoch"],
+                                       "seq": e["seq"], "ts": e["ts"]}))
+        return out
+
+    def all_certs(self) -> list[dict[str, Any]]:
+        """Pull path: everything a node that missed pushes needs to catch up."""
+        with self._lock:
+            return self.certs_from_entries(self.audit.entries)
+
+    def export_snapshot(self) -> dict[str, Any]:
+        with self._lock:
+            body = {"state": json.loads(json.dumps(self.state)), "version": len(self.audit.entries)}
+            return {"body": body, "sig": c.b64e(c.sign(self._sec, "snapshot", c.canonical(body)))}
+
+    def install_snapshot(self, snap: dict[str, Any], primary_pub: bytes) -> bool:
+        """Replica: install a newer, correctly signed snapshot. Local revocations always win."""
+        with self._lock:
+            if not c.verify(primary_pub, "snapshot", c.canonical(snap["body"]), c.b64d(snap["sig"])):
+                raise Denied("bad_signature", "snapshot signature invalid", 400)
+            if snap["body"]["version"] <= self.snapshot_version:
+                return False
+            self.state = json.loads(json.dumps(snap["body"]["state"]))
+            self.snapshot_version = snap["body"]["version"]
+            self._enforce_revoked()
+            self._persist()
+            return True
+
+    def apply_cert(self, cert: dict[str, Any], primary_pub: bytes) -> str:
+        """Replica: apply a signed certificate. Returns what happened."""
+        body = cert["body"]
+        if not c.verify(primary_pub, "cert", c.canonical(body), c.b64d(cert["sig"])):
+            raise Denied("bad_signature", "certificate signature invalid", 400)
+        with self._lock:
+            if body["kind"] == "revoke":
+                self._record_revoked([body["device"]])
+                changed = self._apply_remove_device(body["device"], "revoked")
+                if changed:
+                    self._persist()
+                return "revoked"
+            if body["kind"] == "epoch":
+                cur = self.epoch_floor.get(body["file"], (0, 0.0))
+                if body["epoch"] > cur[0]:
+                    self.epoch_floor[body["file"]] = (body["epoch"], body["ts"])
+                return "epoch"
+        raise Denied("bad_request", "unknown certificate kind", 400)

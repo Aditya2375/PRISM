@@ -58,13 +58,14 @@ class Device:
 
 
 class Client:
-    def __init__(self, device: Device, transport: Transport, clock: Callable[[], float] = time.time):
-        self.dev, self.send, self.clock = device, transport, clock
+    def __init__(self, device: Device, transport: Transport, clock: Callable[[], float] = time.time,
+                 audience: str = "primary"):
+        self.dev, self.send, self.clock, self.aud = device, transport, clock, audience
 
     # -- envelope ------------------------------------------------------------
     def envelope(self, cmd: str, args: dict[str, Any] | None = None) -> dict[str, Any]:
         body = {"cmd": cmd, "device": self.dev.device_id, "ts": round(self.clock(), 3),
-                "nonce": secrets.token_hex(16), "args": args or {}}
+                "nonce": secrets.token_hex(16), "args": args or {}, "aud": self.aud}
         body["sig"] = c.b64e(c.sign(self.dev.sign_sec, "cmd", c.canonical(body)))
         return body
 
