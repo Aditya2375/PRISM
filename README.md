@@ -1,4 +1,6 @@
-# key-identity-guard
+# PRISM (key-identity-guard)
+
+Post-quantum Resilient Identity & Security Management. Core design notes: `docs/CORE.md`.
 
 DevForge Yugaantar, Track 4 ("Key Identity Guard").
 
@@ -72,7 +74,9 @@ Commands for `POST /v1/command` (`cmd` field): `whoami`, `eligible`, `create_use
 ## Layout
 
 ```
-kig/crypto.py    hybrid KEM, ML-DSA, AES-GCM (vetted libraries only)
+kig/crypto.py    hybrid HPKE KEM, ML-DSA, AES-GCM (cryptography package only)
+kig/vault.py     passphrase-sealed key files
+kig/backup.py    signed encrypted backups, verify before restore
 kig/audit.py     signed hash-chained log + standalone verifier
 kig/detect.py    explainable rules
 kig/service.py   identity directory, access decisions, revocation, recovery
