@@ -136,7 +136,7 @@ def test_restore_records_which_checks_were_accepted_in_the_audit_chain(w, tmp_pa
     d = tmp_path / "data"
     b.restore(out, tmp_path / "r", pub, sec, d / "server_sign.pub", d / "server_sign.key", accept_rollback=True)
     svc2 = GuardService(tmp_path / "r", clock=w.clock)
-    e = [x for x in svc2.audit.entries if x["type"] == "restore.rollback_accepted"]
+    e = [x for x in svc2.audit.entries if x["type"] == "restore.completed"]
     assert len(e) == 1 and set(e[0]["data"]["unchecked"]) == {"counter", "revocations"}
     assert svc2.audit.verify() == (True, "ok")
 
@@ -165,3 +165,39 @@ def test_proxy_hops_pick_the_address_the_trusted_proxy_appended(tmp_path, monkey
     for i in range(5):
         cl.post("/v1/command", json={"cmd": "x"}, headers={"x-forwarded-for": f"9.9.9.{i}, 203.0.113.5, 10.0.0.1"})
     assert [k for k in app.state.service._rate if k.startswith("srcfail:")] == ["srcfail:203.0.113.5"]
+
+
+def test_post_auth_log_extras_are_capped_but_first_line_per_device_is_kept(w):
+    from kig.service import POST_AUTH_EXTRA_LOG_MIN
+    assert POST_AUTH_EXTRA_LOG_MIN <= 300
+    stolen = Client(w.alice_phone, w.svc.handle, w.clock)
+    w.admin.call("report_lost", device="alice-phone")
+    n = len(w.svc.audit.entries)
+    w.svc._ua_post = POST_AUTH_EXTRA_LOG_MIN          # global extras budget already used up this minute
+    code(stolen.fetch, "report")
+    assert any(e["type"] == "auth.revoked_device_use" for e in w.svc.audit.entries[n:])
+    m = len(w.svc.audit.entries)
+    for _ in range(5):
+        code(stolen.fetch, "report")
+    assert not any(e["type"] == "auth.revoked_device_use" for e in w.svc.audit.entries[m:])
+
+
+def test_replica_generation_orders_snapshots_before_version(tmp_path):
+    from kig.service import GuardService
+    from conftest import Clock
+    clock = Clock(); p = GuardService(tmp_path / "p", clock=clock); clock.tick(1)
+    a = Device.generate("a-1", "a"); p.bootstrap("a", "a-1", a.sign_pub, a.kem_pub)
+    rep = GuardService(tmp_path / "r", clock=clock, name="r", read_only=True)
+    assert rep.install_snapshot(p.export_snapshot(), p.pub) is True
+    p.state["restore_generation"] = 1                     # a restored primary with a shorter log
+    assert rep.install_snapshot(p.export_snapshot(), p.pub) is True
+    assert GuardService(tmp_path / "r", clock=clock, name="r", read_only=True).snapshot_generation == 1
+    p.state["restore_generation"] = 0
+    assert rep.install_snapshot(p.export_snapshot(), p.pub) is False
+
+
+def test_bad_proxy_hops_fails_at_startup(tmp_path, monkeypatch):
+    from kig.api import create_app
+    monkeypatch.setenv("KIG_PROXY_HOPS", "0")
+    with pytest.raises(ValueError):
+        create_app(tmp_path / "d", trust_proxy=True)
