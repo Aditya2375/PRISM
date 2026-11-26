@@ -53,7 +53,10 @@ README or merged into the threat model. Every claim names the test that proves i
   `kig recover-admin`. A device minted by it can act after 15 minutes if nobody disabled that user.
 * The root of trust is trust on first use unless a fingerprint is pinned out of band.
 * Python cannot wipe memory, so key bytes may stay in process memory after use.
-* The three-node cluster is an in-process simulation. Revocation exposure on a partitioned node is bounded by the
-  5 second lease (`docs/REVOCATION.md`).
+* The three-node cluster runs two ways: an in-process simulation (5 second lease) and three real OS processes over
+  TCP (`python -m kig.netcluster`, 2 second lease in that harness). The real processes share one host, one clock and
+  loopback, so their timings are not a network measurement. Sync is plain HTTP and needs TLS across hosts, and the
+  shared cluster token lets a holder force repeated snapshots. Revocation exposure on a partitioned node is bounded by
+  its lease (`docs/REVOCATION.md`).
 * The audit log has no independent completeness guarantee without an external head or `KIG_PIN_FILE`.
 * A user who loses every device cannot recover their files unless an admin enrols a new one.
