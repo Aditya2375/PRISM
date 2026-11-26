@@ -53,3 +53,21 @@ def test_bad_inputs(tmp_path):
     assert r.status_code == 400 and r.json()["error"] == "bad_request"
     r = tc.post("/v1/command", content=json.dumps(cl.envelope("fetch", {"file_id": "missing"})))
     assert r.status_code == 404
+
+
+def test_every_reply_carries_security_headers(tmp_path):
+    tc, cl, token = make(tmp_path)
+    for r in (tc.get("/healthz"), tc.get("/v1/overview"), tc.post("/v1/command", content=b"nope"), tc.get("/nope")):
+        h = r.headers
+        assert h["x-content-type-options"] == "nosniff" and h["x-frame-options"] == "DENY"
+        assert h["referrer-policy"] == "no-referrer" and "default-src 'none'" in h["content-security-policy"]
+        assert h["cache-control"] == "no-store"
+        assert "strict-transport-security" not in h                     # no trusted proxy configured
+
+
+def test_hsts_only_behind_a_trusted_proxy_that_says_https(tmp_path):
+    from kig.api import create_app
+    app = create_app(tmp_path / "d", None, trust_proxy=True)
+    tc = TestClient(app)
+    assert "strict-transport-security" not in tc.get("/healthz").headers
+    assert "max-age" in tc.get("/healthz", headers={"x-forwarded-proto": "https"}).headers["strict-transport-security"]

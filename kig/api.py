@@ -16,6 +16,7 @@ from typing import Any
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.responses import JSONResponse
+from starlette.concurrency import run_in_threadpool
 
 from . import crypto as c
 from .service import MAX_FILE_BYTES, Denied, GuardService
@@ -107,6 +108,20 @@ def create_app(data_dir: str | Path, service: GuardService | None = None,
         app.add_middleware(CORSMiddleware, allow_origins=cors_origins, allow_credentials=False,
                            allow_methods=["GET", "POST"], allow_headers=["content-type", "x-kig-operator-token"])
 
+    @app.middleware("http")
+    async def security_headers(request: Request, call_next):
+        """Every reply, errors included. This API returns JSON only, so the page policy is the strictest one."""
+        resp = await call_next(request)
+        resp.headers.setdefault("Cache-Control", "no-store")
+        resp.headers["X-Content-Type-Options"] = "nosniff"
+        resp.headers["X-Frame-Options"] = "DENY"
+        resp.headers["Referrer-Policy"] = "no-referrer"
+        resp.headers["Content-Security-Policy"] = "default-src 'none'; frame-ancestors 'none'"
+        # HSTS only when a proxy we trust says the client used HTTPS; sending it over plain HTTP would be meaningless
+        if trust_proxy and request.headers.get("x-forwarded-proto", "").lower() == "https":
+            resp.headers["Strict-Transport-Security"] = "max-age=31536000"
+        return resp
+
     def operator(x_kig_operator_token: str = Header(default="")) -> None:
         if not hmac.compare_digest(x_kig_operator_token.encode(), token.encode()):
             raise HTTPException(status_code=401, detail="operator token required")
@@ -142,7 +157,9 @@ def create_app(data_dir: str | Path, service: GuardService | None = None,
             chain = [h.strip() for h in request.headers.get("x-forwarded-for", "").split(",") if h.strip()]
             if len(chain) >= hops:
                 src = chain[-hops][:64]
-        return svc.handle(env, source=src)
+        # signing, hashing, fsync and the state write run off the event loop, so /healthz and operator reads stay
+        # responsive while a large upload is processed. The service itself still handles one command at a time (its lock).
+        return await run_in_threadpool(svc.handle, env, src)
 
     @app.get("/v1/overview", dependencies=[Depends(operator)])
     def overview() -> dict[str, Any]:

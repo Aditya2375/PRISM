@@ -20,17 +20,19 @@ from starlette.responses import JSONResponse, Response
 from starlette.routing import Route
 from starlette.staticfiles import StaticFiles
 
+from kig.envcfg import env_num
+
 SERVICE = os.environ.get("HOSTED_SERVICE_URL", "http://127.0.0.1:8443")
 LOCAL = os.environ.get("HOSTED_LOCAL_URL", "http://127.0.0.1:8788")
-MAX_BODY = int(os.environ.get("HOSTED_MAX_BODY", str(64 * 1024)))       # bytes, per request
-RATE = int(os.environ.get("HOSTED_RATE", "120"))                         # requests per window, per client
-WINDOW = float(os.environ.get("HOSTED_WINDOW_S", "60"))
-FAIL_RATE = int(os.environ.get("HOSTED_FAIL_RATE", "10"))                # rejected token attempts per window, per client
-GLOBAL_RATE = int(os.environ.get("HOSTED_GLOBAL_RATE", "3000"))           # requests per window, all clients together
-GLOBAL_FAIL_RATE = int(os.environ.get("HOSTED_GLOBAL_FAIL_RATE", "100"))  # rejected token replies per window, all clients
+MAX_BODY = env_num("HOSTED_MAX_BODY", 64 * 1024, 1024, 64 * 1024 * 1024)       # bytes, per request
+RATE = env_num("HOSTED_RATE", 120)                         # requests per window, per client
+WINDOW = env_num("HOSTED_WINDOW_S", 60, 1, 86400, float)
+FAIL_RATE = env_num("HOSTED_FAIL_RATE", 10)                # rejected token attempts per window, per client
+GLOBAL_RATE = env_num("HOSTED_GLOBAL_RATE", 3000)           # requests per window, all clients together
+GLOBAL_FAIL_RATE = env_num("HOSTED_GLOBAL_FAIL_RATE", 100)  # rejected token replies per window, all clients
 TRUST_PROXY = os.environ.get("HOSTED_TRUST_PROXY") == "1"                # only behind a host that sets X-Forwarded-For itself
-BODY_TIMEOUT_S = float(os.environ.get("HOSTED_BODY_TIMEOUT_S", "10"))
-MAX_REPLY = int(os.environ.get("HOSTED_MAX_REPLY", str(2 * 1024 * 1024)))
+BODY_TIMEOUT_S = env_num("HOSTED_BODY_TIMEOUT_S", 10, 0.1, 600, float)
+MAX_REPLY = env_num("HOSTED_MAX_REPLY", 2 * 1024 * 1024, 1024, 1024 ** 3)
 MAX_KEYS = 5000
 CSP = ("default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' blob: data:; connect-src 'self'; "
        "object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'")
@@ -154,8 +156,26 @@ def build_app(static_dir: str | None = None, *, client: httpx.AsyncClient | None
         out["Cache-Control"] = "no-store"
         return Response(bytes(content), status_code=r.status_code, headers=out)
 
+    probe = {"at": -1e9, "down": []}
+
     async def health(_: Request) -> Response:
-        return JSONResponse({"ok": True})
+        """200 only when both backends answer. The result is cached for 3 s so a health-check storm cannot hammer them.
+        The service answers /healthz; the local backend is alive when it answers /me with its own 401 (no token is
+        sent, and none is needed to tell that it is up)."""
+        now = time.monotonic()
+        if now - probe["at"] > 3.0:
+            down = []
+            for name, url, want in (("service", SERVICE + "/healthz", 200), ("local", LOCAL + "/me", 401)):
+                try:
+                    r = await http.get(url, timeout=httpx.Timeout(1.5, connect=1.0))
+                    if r.status_code != want:
+                        down.append(name)
+                except httpx.HTTPError:
+                    down.append(name)
+            probe["at"], probe["down"] = now, down
+        if probe["down"]:
+            return JSONResponse({"ok": False, "down": probe["down"]}, status_code=503, headers={"Cache-Control": "no-store"})
+        return JSONResponse({"ok": True}, headers={"Cache-Control": "no-store"})
 
     routes = [Route("/healthz", health)]
     for p in sorted({p for _, p in SERVICE_ALLOW | LOCAL_ALLOW}):

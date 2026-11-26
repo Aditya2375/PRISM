@@ -135,3 +135,40 @@ def test_rejected_tokens_from_one_client_do_not_use_up_the_global_failure_budget
     for _ in range(100):
         c.get("/v1/overview", headers={"x-kig-operator-token": "bad", "x-forwarded-for": "1.1.1.1"})
     assert c.get("/v1/overview", headers={"x-kig-operator-token": "bad", "x-forwarded-for": "3.3.3.3"}).status_code == 401
+
+
+def _health_client(service_status, local_status, calls):
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(str(request.url))
+        if request.url.path == "/healthz":
+            if service_status is None:
+                raise httpx.ConnectError("down")
+            return httpx.Response(service_status, json={})
+        if request.url.path == "/me":
+            if local_status is None:
+                raise httpx.ConnectError("down")
+            return httpx.Response(local_status, json={})
+        return httpx.Response(404)
+    return httpx.AsyncClient(transport=httpx.MockTransport(handler))
+
+
+def test_health_is_ok_only_when_both_backends_answer():
+    calls = []
+    c = TestClient(build_app(client=_health_client(200, 401, calls)))
+    r = c.get("/healthz")
+    assert r.status_code == 200 and r.json() == {"ok": True}
+
+
+def test_health_fails_when_a_backend_is_down():
+    for svc, loc, down in [(None, 401, ["service"]), (200, None, ["local"]), (500, 200, ["service", "local"])]:
+        c = TestClient(build_app(client=_health_client(svc, loc, [])))
+        r = c.get("/healthz")
+        assert r.status_code == 503 and r.json() == {"ok": False, "down": down}, (svc, loc)
+
+
+def test_health_result_is_cached_briefly():
+    calls = []
+    c = TestClient(build_app(client=_health_client(200, 401, calls)))
+    for _ in range(10):
+        assert c.get("/healthz").status_code == 200
+    assert len(calls) == 2                      # one probe per backend, not one per request

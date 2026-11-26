@@ -14,6 +14,8 @@ import sys
 import tempfile
 import time
 import urllib.request
+
+from kig.envcfg import env_num
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -77,7 +79,7 @@ def main() -> int:
     from hosted.proxy import build_app
     static = os.environ.get("HOSTED_STATIC", str(ROOT / "web-p3" / "hosted-dist"))
     try:
-        uvicorn.run(build_app(static), host="0.0.0.0", port=int(os.environ.get("PORT", "10000")), proxy_headers=False,
+        uvicorn.run(build_app(static), host="0.0.0.0", port=env_num("PORT", 10000, 1, 65535), proxy_headers=False,
                     timeout_keep_alive=5, timeout_graceful_shutdown=3)
     finally:
         for p in (wa, svc):

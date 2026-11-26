@@ -26,6 +26,7 @@ from typing import Any, Callable
 from . import crypto as c
 from . import vault
 from .audit import AuditError, AuditLog
+from .envcfg import env_num
 from .detect import Alert, Detector
 from .store import StateStore, StoreCorrupt
 
@@ -37,7 +38,7 @@ MAX_USER_FILES = 1_000            # per owner
 MAX_USER_BYTES = 256 * 1024 * 1024   # per owner, ciphertext on disk including the kept previous version
 MAX_TOTAL_BYTES = 4 * 1024 ** 3      # whole service
 COOLING_OFF_S = 900                # a device enrolled less than this long ago cannot remove admins or change roles
-MAX_USER_TOMBS = int(os.environ.get("KIG_MAX_DELETED_IDS", "2000"))   # remembered deleted ids per owner (a few dozen bytes each)
+MAX_USER_TOMBS = env_num("KIG_MAX_DELETED_IDS", 2000, 1, 10_000_000)   # remembered deleted ids per owner (a few dozen bytes each)
 MAX_FILES = 10_000                 # per service, bounds state size and write cost
 DEVICE_RATE_PER_MIN = 240          # authenticated requests per device per minute
 SOURCE_FAIL_PER_MIN = 1200         # failed (unauthenticated) requests per source address per minute
@@ -545,14 +546,19 @@ class GuardService:
         self._ua_post = 0
         self._rate = {k: v for k, v in self._rate.items() if v[0] == minute}
 
+    RATE_TABLE_MAX = 20_000
+    OVERFLOW_FACTOR = 100          # when the table is full, all new keys of one kind share ONE bucket this many times the limit
+
     def _rate_hit(self, key: str, limit: int, now: float) -> bool:
         minute = int(now // 60)
+        if len(self._rate) >= self.RATE_TABLE_MAX and key not in self._rate:
+            # Table full (more than RATE_TABLE_MAX distinct keys in one minute). Do not grow it and do not stop
+            # limiting: every new key of this kind shares one overflow bucket, so the limit still holds in total.
+            key, limit = "overflow:" + key.split(":", 1)[0], limit * self.OVERFLOW_FACTOR
         m, n = self._rate.get(key, (minute, 0))
         if m != minute:
             m, n = minute, 0
         n += 1
-        if len(self._rate) > 20_000 and key not in self._rate:
-            return False                       # table full: stop tracking rather than grow without bound
         self._rate[key] = (m, n)
         return n > limit
 
