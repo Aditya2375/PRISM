@@ -22,6 +22,9 @@ from .client import Client, Device
 from .service import GuardService
 
 
+PER_OWNER = 800                   # stays below the service's per-owner file limit
+
+
 class _Clock:
     def __init__(self) -> None:
         self.t = 1_800_000_000.0
@@ -54,9 +57,18 @@ def run(size: int, payload: int = 2048) -> dict:
         for i in range(3):
             cl.call("enroll_device", **Device.generate(f"a-{i + 2}", "a").public_args())
         t0 = time.perf_counter()
+        # each owner is limited to MAX_USER_FILES (1000), so a large store is spread over several owners
+        per_owner = PER_OWNER
+        fillers = [cl]
+        for j in range(1, -(-size // per_owner)):
+            cl.call("create_user", user=f"m{j}", role="member")
+            m = Device.generate(f"m{j}-1", f"m{j}")
+            cl.call("enroll_device", **m.public_args())
+            fillers.append(Client(m, svc.handle, clock))
         for i in range(size):
             clock.tick()
-            cl.put_file(f"f{i}", os.urandom(payload), acl=["a"])
+            who = fillers[i // per_owner]
+            who.put_file(f"f{i}", os.urandom(payload), acl=[who.dev.user])
         fill = (time.perf_counter() - t0) / size * 1000
         out = {"files": size, "avg_put_while_filling_ms": round(fill, 2)}
         k = [0]

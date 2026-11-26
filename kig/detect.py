@@ -51,9 +51,22 @@ class Detector:
     def observe(self, entry: dict[str, Any]) -> list[Alert]:
         t, seq, ts, d = entry["type"], entry["seq"], entry["ts"], entry["data"]
         alerts: list[Alert] = []
+        actor = entry.get("actor", "?")
 
         if t in ("device.revoked", "device.lost"):
             self.removed_at[d["device"]] = seq
+        if t in ("device.revoked", "device.lost") and d.get("admin_sibling"):
+            alerts.append(
+                Alert(
+                    "R5-ADMIN-DEVICE-REVOKED-BY-SIBLING",
+                    "critical",
+                    f"An admin device ({d.get('device')}) of {d.get('user')} was removed by another device of the same admin ({actor}). "
+                    "If this was not you, the acting device may be stolen: enrol a recovery device from the host and revoke it.",
+                    [seq],
+                    response="recorded; operator recovery (recover-admin) can add a new admin device",
+                    subject=str(d.get("user")),
+                )
+            )
         elif t == "device.enrolled":
             self.first_device_ts.setdefault(d["user"], ts)
         elif t == "auth.revoked_device_use":

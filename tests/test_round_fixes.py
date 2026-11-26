@@ -528,3 +528,30 @@ def test_i5_first_use_pin_requires_our_own_chain_to_verify(tmp_path):
     with pytest.raises(c.CryptoError):
         bc._ensure_roots()
     assert not bc.pins.get("roots")
+
+
+def test_i1_admin_device_revoked_by_a_sibling_raises_a_critical_alert(tmp_path):
+    svc, laptop = boot(tmp_path / "d")
+    ac = Client(laptop, svc.handle)
+    phone = Device.generate("adm-phone", "adm")
+    ac.call("enroll_device", **phone.public_args())
+    Client(phone, svc.handle).call("revoke_device", device="adm-1")
+    al = [e["data"] for e in svc.audit.entries if e["type"] == "alert.raised"]
+    assert any(a["rule"] == "R5-ADMIN-DEVICE-REVOKED-BY-SIBLING" and a["severity"] == "critical" for a in al)
+
+
+def test_i1_member_device_revoked_by_its_own_other_device_is_not_that_alert(tmp_path):
+    svc, adm = boot(tmp_path / "d")
+    ac, bob = member(svc, adm)
+    b2 = Device.generate("bob-2", "bob")
+    ac.call("enroll_device", **b2.public_args())
+    Client(b2, svc.handle).call("revoke_device", device="bob-1")
+    assert not [e for e in svc.audit.entries if e["type"] == "alert.raised" and e["data"]["rule"].startswith("R5")]
+
+
+def test_w4_bench_spreads_files_over_owners(monkeypatch):
+    from kig import bench
+    monkeypatch.setattr(S, "MAX_USER_FILES", 40)
+    monkeypatch.setattr(bench, "PER_OWNER", 5)
+    out = bench.run(12, payload=64)
+    assert out["files"] == 12

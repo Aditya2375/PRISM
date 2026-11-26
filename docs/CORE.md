@@ -140,13 +140,13 @@ flips are all rejected (`tests/test_backup.py`).
 
 ## Measured cost (`python -m kig.bench`)
 
-One run on a development machine (Python 3.10, in-process service, 2 KB files, medians, times in ms):
+One run on a development machine (Python 3.10, in-process service, 2 KB files, medians, times in ms; stores above 800 files are spread over several owners because one owner is limited to 1,000 files):
 
 | files | put | fetch | rotate | backup | restore | backup peak RAM | restore peak RAM | start-up replay |
 |---|---|---|---|---|---|---|---|---|
-| 100 | 6.0 | 2.6 | 12 | 51 | 109 | 8 MB | 10 MB | 40 |
-| 500 | 5.8 | 2.7 | 11 | 199 | 412 | 31 MB | 38 MB | 153 |
-| 2000 | 5.8 | 2.9 | 12 | 695 | 1489 | 118 MB | 141 MB | 169 |
+| 100 | 10.0 | 3.9 | 18 | 80 | 159 | 11 MB | 13 MB | 63 |
+| 900 | 12.0 | 4.6 | 22 | 579 | 1103 | 73 MB | 86 MB | 428 |
+| 2000 | 11.8 | 4.1 | 21 | 1101 | 2493 | 134 MB | 159 MB | 313 |
 
 Put, fetch and rotate stay flat as the store grows (journaled state). Backup and restore are linear in time,
 and their memory grows with the number of files, because the sealed state metadata (about 7 KB per file with four

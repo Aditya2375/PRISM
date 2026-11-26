@@ -756,7 +756,8 @@ class GuardService:
         pending = sorted(k for k, f in self.state["files"].items() if f["needs_rotation"])
         self._log(f"device.{'lost' if kind == 'lost' else 'revoked'}", dev,
                   {"device": target, "user": d["user"], "by": user,
-                   "reason": str(args.get("reason", ""))[:200], "files_needing_rotation": pending})
+                   "reason": str(args.get("reason", ""))[:200], "files_needing_rotation": pending,
+                   "admin_sibling": role == "admin" and d["user"] == user and target != dev})
         return {"ok": True, "files_needing_rotation": pending}
 
     def cmd_revoke_device(self, dev, user, role, args):
