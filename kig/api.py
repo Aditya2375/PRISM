@@ -55,7 +55,7 @@ async def read_capped(request: Request, limit: int) -> bytes:
     """Read a request body without ever holding more than `limit` bytes: Content-Length first, then count the stream."""
     cl = request.headers.get("content-length")
     if cl is not None:
-        if not cl.isdigit() or int(cl) > limit:
+        if not (cl.isascii() and cl.isdigit()) or int(cl) > limit:
             raise Denied("too_large", "request body too large", 413)
     buf = bytearray()
     async for chunk in request.stream():

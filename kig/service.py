@@ -153,6 +153,7 @@ class GuardService:
         self._rate: dict[str, tuple[int, int]] = {}
         # Nonces are memory-only, so refuse anything signed before this process started.
         self.boot = self.clock()
+        self._sizes: dict[str, int] = {}
         self._replay_detector()
         self._reconcile()
         self._recover_rotations()
@@ -338,7 +339,12 @@ class GuardService:
     def _check_pin(self) -> None:
         """Optional rollback guard. If a pin file (kept OUTSIDE the data directory, ideally on other storage) says the
         log once had N entries ending in a given hash, refuse to start on anything older or different."""
-        if self.pin_path is None or not self.pin_path.exists():
+        if self.pin_path is None:
+            return
+        if not self.pin_path.exists():
+            if self.audit.entries:
+                raise RuntimeError(f"KIG_PIN_FILE is set but {self.pin_path} does not exist, and the log is not empty; "
+                                   "refusing to start (a missing pin would switch rollback protection off)")
             return
         try:
             pin = json.loads(self.pin_path.read_text())
@@ -592,7 +598,7 @@ class GuardService:
             self._throttled("anon", self._src, "auth.wrong_audience", dev_id,
                             {"device": dev_id, "cmd": cmd, "aud": aud[:64]},
                             "wrong_audience", "request was signed for a different node")
-        if abs(now - ts) > SKEW_S or ts < self.boot:
+        if abs(now - ts) > SKEW_S or ts + 0.002 < self.boot:
             self._throttled("anon", self._src, "auth.stale", dev_id,
                             {"device": dev_id, "cmd": cmd, "skew": round(now - ts, 1)},
                             "stale", "timestamp outside the allowed window")
@@ -875,10 +881,15 @@ class GuardService:
                 "role_proof": (self.state["users"].get(dev["user"]) or {}).get("role_proof") if dev else None}
 
     def _blob_size(self, h: str | None) -> int:
-        try:
-            return self._blob_path(h).stat().st_size if h else 0
-        except OSError:
+        """Blobs are content-addressed and never change, so a size is looked up once and kept."""
+        if not h:
             return 0
+        if h not in self._sizes:
+            try:
+                self._sizes[h] = self._blob_path(h).stat().st_size
+            except OSError:
+                return 0
+        return self._sizes[h]
 
     def _check_quota(self, owner: str, new_bytes: int, new_file: bool, replacing: dict[str, Any] | None = None) -> None:
         """Per-owner and service-wide limits, so one member cannot use up everyone's budget."""
@@ -910,6 +921,8 @@ class GuardService:
         fid = _valid_id(args.get("file_id"))
         if fid in self.state["files"]:
             raise Denied("conflict", "file exists; use rotate", 409)
+        if fid in self.state.get("deleted", ()):
+            raise Denied("conflict", "this file id was used and deleted; ids are never reused", 409)
         acl = self._acl(args, user)
         if user not in acl:
             raise Denied("bad_request", "creator must be in acl", 400)
@@ -919,15 +932,26 @@ class GuardService:
         commit = self._check_commit(args.get("commit"))
         ct_raw = self._check_blob(args.get("ciphertext"))
         self._check_quota(user, len(ct_raw), True)
-        ct = self._store_blob(ct_raw)
         wraps = self._check_wraps(args.get("wraps"), acl)
         manifest = self._check_manifest(dev, fid, 1, acl, user, commit, args.get("manifest_sig"))
-        self.state["files"][fid] = {
-            "owner": user, "acl": acl, "epoch": 1, "ct": ct, "commit": commit, "manifest": manifest,
-            "wraps": wraps, "needs_rotation": False, "prev": None,
-        }
-        self._log("file.created", dev, {"file": fid, "owner": user, "acl": acl, "epoch": 1})
+        ct = self._store_blob(ct_raw)             # last: a rejected request never leaves a blob behind
+        try:
+            self.state["files"][fid] = {
+                "owner": user, "acl": acl, "epoch": 1, "ct": ct, "commit": commit, "manifest": manifest,
+                "wraps": wraps, "needs_rotation": False, "prev": None,
+            }
+            self._log("file.created", dev, {"file": fid, "owner": user, "acl": acl, "epoch": 1})
+        except BaseException:
+            if self.state["files"].get(fid, {}).get("ct") == ct and not self._logged_created(fid):
+                del self.state["files"][fid]
+            if ct not in self.blob_hashes():
+                self._blob_path(ct).unlink(missing_ok=True)
+            raise
         return {"ok": True, "epoch": 1}
+
+    def _logged_created(self, fid: str) -> bool:
+        return any(e["type"] == "file.created" and isinstance(e["data"], dict) and e["data"].get("file") == fid
+                   for e in self.audit.entries[-3:])
 
     def _file_for(self, dev, user, role, fid: str, action: str) -> dict[str, Any]:
         f = self.state["files"].get(fid)
@@ -1002,9 +1026,11 @@ class GuardService:
             self._deny("authz.denied", dev, {"device": dev, "file": fid, "action": "delete_file"},
                        "forbidden", "only the owner or an admin may delete this file")
         gone = [h for h in (f["ct"], (f.get("prev") or {}).get("ct")) if h]
-        del self.state["files"][fid]
-        self._persist()
         self._log("file.deleted", dev, {"file": fid, "owner": f["owner"], "by": user, "epoch": f["epoch"]})
+        del self.state["files"][fid]
+        gone_ids = self.state.setdefault("deleted", [])
+        gone_ids.append(fid)
+        del gone_ids[:-100_000]
         self._persist()
         live = self.blob_hashes()
         for h in gone:

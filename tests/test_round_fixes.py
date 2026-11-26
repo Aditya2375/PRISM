@@ -228,7 +228,9 @@ def test_g2_directory_rollback_refused_with_pin(tmp_path):
     shutil.rmtree(d); shutil.copytree(tmp_path / "old", d)
     with pytest.raises(Exception):
         GuardService(d, pin_path=pin)
-    GuardService(tmp_path / "d", pin_path=tmp_path / "nopin.json")     # without a pin it still starts (documented limit)
+    with pytest.raises(Exception):                                       # a missing pin file on a non-empty log is refused (I4)
+        GuardService(tmp_path / "d", pin_path=tmp_path / "nopin.json")
+    GuardService(tmp_path / "d")                                         # no pin configured at all: starts (documented limit)
 
 
 def test_g2_pin_advances_and_honest_restart_works(tmp_path):
@@ -379,3 +381,66 @@ def test_recovered_device_works_when_roots_are_pinned(tmp_path):
     Client(a, svc.handle, roots=roots).put_file("g", b"z", acl=["adm", ])
     with pytest.raises(Exception):
         Client(n, svc.handle, roots=[n.fingerprint()]).fetch("g")
+
+
+# ---- round 4 (I2, I3, I4, I7) and critic (W2, W3)
+def test_i2_rejected_put_leaves_no_blob_behind(tmp_path):
+    svc, adm = boot(tmp_path / "d")
+    ac, bob = member(svc, adm)
+    bc = Client(bob, svc.handle, verify_directory=False)
+    for i in range(5):
+        with pytest.raises(Denied):
+            bc.call("put_file", file_id=f"x{i}", acl=["bob"], ciphertext=c.b64e(os.urandom(100_000)), wraps={},
+                    commit="0" * 64, manifest_sig=c.b64e(b"s"))
+    blobs = [f for f in (tmp_path / "d" / "blobs").rglob("*") if f.is_file()] if (tmp_path / "d" / "blobs").exists() else []
+    assert blobs == []
+
+
+def test_i3_deleted_file_id_is_never_reused(tmp_path):
+    svc, adm = boot(tmp_path / "d")
+    ac = Client(adm, svc.handle)
+    ac.put_file("doc", b"v1", acl=["adm"]); ac.rotate("doc")
+    ac.call("delete_file", file_id="doc")
+    with pytest.raises(Denied) as e:
+        ac.put_file("doc", b"v2", acl=["adm"])
+    assert e.value.code == "conflict"
+    assert "doc" in svc.state["deleted"]
+    ac.put_file("doc-2", b"v2", acl=["adm"])
+
+
+def test_i7_quota_walk_does_not_touch_the_disk_again(tmp_path, monkeypatch):
+    svc, adm = boot(tmp_path / "d")
+    ac = Client(adm, svc.handle)
+    for i in range(10):
+        ac.put_file(f"f{i}", b"x", acl=["adm"])
+    svc._check_quota("adm", 10, True)          # first walk fills the size cache
+    calls = []
+    real = Path.stat
+    monkeypatch.setattr(Path, "stat", lambda self, *a, **k: (calls.append(1), real(self, *a, **k))[1])
+    svc._check_quota("adm", 10, True)
+    svc._check_quota("adm", 10, True)
+    assert len(calls) == 0
+
+
+def test_w2_delete_is_never_committed_without_its_audit_entry(tmp_path):
+    svc, adm = boot(tmp_path / "d")
+    ac = Client(adm, svc.handle)
+    ac.put_file("doc", b"x", acl=["adm"])
+    real = svc._log
+
+    def boom(t, *x, **k):
+        if t == "file.deleted":
+            raise RuntimeError("crash")
+        return real(t, *x, **k)
+    svc._log = boom
+    with pytest.raises(Exception):
+        ac.call("delete_file", file_id="doc")
+    svc._log = real
+    s2_dir = tmp_path / "copy"; shutil.copytree(tmp_path / "d", s2_dir, ignore=shutil.ignore_patterns(".datalock"))
+    s2 = GuardService(s2_dir)
+    assert "doc" in s2.state["files"] or any(e["type"] == "file.deleted" for e in s2.audit.entries)
+
+
+def test_w3_odd_content_length_is_a_clean_4xx(tmp_path):
+    cl = TestClient(create_app(tmp_path), raise_server_exceptions=False)
+    assert cl.post("/v1/command", content=b"{}", headers={"content-length": b"\xb2"}).status_code < 500

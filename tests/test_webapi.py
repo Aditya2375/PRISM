@@ -297,8 +297,10 @@ def test_delete_file_owner_and_admin_only_and_strict_body(tmp_path):
     assert g.status_code == 403 and "salary" in svc.state["files"]
     # the owner can; an admin can delete a member's file
     assert wr.post("/files/delete", json={"file_id": "ravi-note"}, headers=H).status_code == 200
-    wr.post("/files", json=mine, headers=H)
-    assert wa.post("/files/delete", json={"file_id": "ravi-note"}, headers=H).status_code == 200
-    assert wa.post("/files/delete", json={"file_id": "ravi-note"}, headers=H).status_code >= 400   # already gone
-    assert "ravi-note" not in svc.state["files"]
+    again = {**mine, "file_id": "ravi-note-2"}
+    assert wr.post("/files", json=mine, headers=H).status_code == 409           # a deleted id is never reused
+    assert wr.post("/files", json=again, headers=H).status_code == 200
+    assert wa.post("/files/delete", json={"file_id": "ravi-note-2"}, headers=H).status_code == 200
+    assert wa.post("/files/delete", json={"file_id": "ravi-note-2"}, headers=H).status_code >= 400   # already gone
+    assert "ravi-note-2" not in svc.state["files"]
     assert any(e["type"] == "file.deleted" for e in svc.audit.entries)

@@ -144,13 +144,17 @@ def main(argv: list[str] | None = None) -> int:
     if a.op == "recover-admin":
         dev = Device.generate(a.device, a.user)
         try:
-            fp = GuardService(a.data).recover_admin(a.user, a.device, dev.sign_pub, dev.kem_pub)
+            svc = GuardService(a.data)
+            fp = svc.recover_admin(a.user, a.device, dev.sign_pub, dev.kem_pub)
         except Denied as e:
             print(f"refused: {e.reason}", file=sys.stderr)
             return 2
+        except (RuntimeError, OSError, ValueError) as e:
+            print(f"refused: cannot open the data directory ({e}). Stop the running service first; recovery is offline.", file=sys.stderr)
+            return 2
         dev.save(a.out)
         print(f"enrolled new device {a.device} for admin {a.user}; key file {a.out}; fingerprint {fp}")
-        roots = GuardService(a.data).root_fingerprints()
+        roots = svc.root_fingerprints()
         print("clients must pin these roots (--root-fingerprint): " + ", ".join(roots + [fp]))
         print("every file this user can read is flagged for re-keying; record this action: it is in the audit log as an operator action", file=sys.stderr)
         return 0
