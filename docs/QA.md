@@ -101,7 +101,7 @@ can slow it. `THREAT_MODEL.md`, "Availability".
 
 **Is the cluster real?** Partly. The three nodes run as separate OS processes over TCP (`python -m kig.netcluster`, `python -m kig.demo --net`), but on one host, with plain HTTP and a shared token. The in-process version stays as the fast-test path. It is not a multi-host deployment.
 **Is there TLS?** Out of scope: the demo binds to localhost; deployment is assumed to add TLS.
-**Is there AI or ML?** No. Detection is five explainable rules (README table).
+**Is there AI or ML?** No. Detection is nine explainable rules (README table).
 **Performance?** `python -m kig.bench`; the table and its limits are in `docs/CORE.md` (backup memory grows with the
 number of files).
 **What would you do with more time?** A real multi-host cluster, a hardware key store driver, a Merkle-tree log with

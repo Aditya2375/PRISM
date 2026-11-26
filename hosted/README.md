@@ -6,8 +6,9 @@ A throwaway copy of the PRISM web console for reviewing the design in a browser.
   Ravi, three files, a lost phone and the alerts it causes), runs the PRISM service and the local user backend on
   loopback only, and serves the console on `$PORT`.
 * `hosted/proxy.py` is the only public surface. It forwards an allow-list of paths, limits each client address
-  (120 requests per minute, and a lower limit on rejected tokens), and caps request bodies at 64 KB, so uploads in this copy
-  are small.
+  (120 requests per minute, and a lower limit on rejected tokens), and caps request bodies at 64 KB. The console says so and
+  refuses files over 40 KB here (base64 adds a third; the local app takes 4 MB). `/healthz` answers 200 only when both
+  backends answer and 503 otherwise (cached for 3 s).
 * Two random tokens are printed once to the log at start: the operator token and the session token (the session
   token acts as Asha, an admin, on demo data). Share them only with the reviewer. They change on every restart.
 * On a free host the service sleeps when idle and its disk is wiped on restart, so data and tokens reset.
@@ -22,3 +23,7 @@ A throwaway copy of the PRISM web console for reviewing the design in a browser.
   There is no connection cap and no header-read timeout in this process (a cap let partial-header sockets lock everyone out), so slow-header
   attacks are left to the host's edge proxy; Render's does that. Checked on the live host after deploy.
 * Header size is not capped by this process (a 20 KB header gets through to the proxy); the host's edge limits it.
+* The demo service signs with a key that is generated at start and kept unencrypted in the temporary data directory (no
+  passphrase), and the two tokens are printed to the host log. That is acceptable for throwaway demo data and not for a real
+  deployment, where the key is sealed with a passphrase or a hardware keystore and tokens are never logged.
+* `python scripts/smoke.py URL --operator-token T --session-token S` checks a running copy.

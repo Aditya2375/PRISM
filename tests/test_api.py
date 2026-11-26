@@ -71,3 +71,24 @@ def test_hsts_only_behind_a_trusted_proxy_that_says_https(tmp_path):
     tc = TestClient(app)
     assert "strict-transport-security" not in tc.get("/healthz").headers
     assert "max-age" in tc.get("/healthz", headers={"x-forwarded-proto": "https"}).headers["strict-transport-security"]
+
+
+def test_scheduled_backup_endpoint(tmp_path, monkeypatch):
+    from kig import backup as bk
+    tc, cl, token = make(tmp_path)
+    h = {"X-KIG-Operator-Token": token}
+    assert tc.post("/v1/backup").status_code == 401
+    assert tc.post("/v1/backup", headers=h).status_code == 409                  # not configured
+    keys, out = tmp_path / "keys", tmp_path / "bk"
+    bk.keygen(keys, passphrase="")
+    monkeypatch.setenv("KIG_BACKUP_PUB", str(keys / "backup.pub"))
+    monkeypatch.setenv("KIG_BACKUP_DIR", str(tmp_path / "d" / "inside"))
+    assert tc.post("/v1/backup", headers=h).status_code == 409                  # inside the data directory: refused
+    monkeypatch.setenv("KIG_BACKUP_DIR", str(out))
+    r = tc.post("/v1/backup", headers=h)
+    assert r.status_code == 200 and r.json()["counter"] == 1
+    r2 = tc.post("/v1/backup", headers=h)
+    assert r2.json()["counter"] == 2 and r2.json()["file"] != r.json()["file"]
+    files = sorted(p.name for p in out.iterdir())
+    assert len(files) == 2 and all(f.endswith(".bak") for f in files)
+    assert (out / r.json()["file"]).stat().st_mode & 0o077 == 0                 # owner-only

@@ -187,6 +187,31 @@ def create_app(data_dir: str | Path, service: GuardService | None = None,
         ok, why = svc.audit.verify()
         return {"ok": ok, "reason": why, "head": svc.audit.head}
 
+    @app.post("/v1/backup", dependencies=[Depends(operator)])
+    def make_backup() -> dict[str, Any]:
+        """Write one signed, sealed backup into the configured directory, so a cron job or timer can schedule backups.
+        The directory and the backup PUBLIC key are fixed by the operator at start (KIG_BACKUP_DIR, KIG_BACKUP_PUB); the
+        caller chooses neither, so this endpoint cannot be used to write anywhere else. The private key stays offline."""
+        from . import backup as bk
+        raw_dir, raw_pub = os.environ.get("KIG_BACKUP_DIR", ""), os.environ.get("KIG_BACKUP_PUB", "")
+        if not raw_dir or not raw_pub:
+            raise Denied("not_configured", "set KIG_BACKUP_DIR and KIG_BACKUP_PUB to enable backups", 409)
+        out_dir, pub_path = Path(raw_dir), Path(raw_pub)
+        try:
+            pub = pub_path.read_bytes()
+            out_dir.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            raise Denied("not_configured", "the backup public key or directory cannot be used", 409) from None
+        if out_dir.resolve() == data_dir.resolve() or data_dir.resolve() in out_dir.resolve().parents:
+            raise Denied("not_configured", "KIG_BACKUP_DIR must be outside the data directory", 409)
+        import time as _t
+        tmp_name = out_dir / f"prism-{secrets.token_hex(4)}.bak"
+        info = bk.create(svc, pub, tmp_name)
+        final = out_dir / f"prism-{info['counter']:06d}-{_t.strftime('%Y%m%dT%H%M%SZ', _t.gmtime())}.bak"
+        tmp_name.rename(final)
+        return {"ok": True, "file": final.name, "counter": info["counter"], "blob_count": info["blob_count"],
+                "audit_len": info["audit_len"], "audit_head": info["audit_head"]}
+
     @app.get("/v1/alerts", dependencies=[Depends(operator)])
     def alerts() -> dict[str, Any]:
         return {"alerts": svc.alerts()}

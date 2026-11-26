@@ -34,7 +34,7 @@ python -m pytest -q            # the full suite
                                                 signed encrypted backups, doctor, bench
 ```
 
-* Revocation, the in-process simulation and the real three-process cluster: `docs/REVOCATION.md`. Device classes, removal rules, deleted ids and the limits that remain: `docs/CORE_HARDENING.md`. Video walk-through of the core: `docs/DEMO_SCRIPT.md`. Architecture paragraphs: `docs/ARCHITECTURE_NOTES.md`.
+* Revocation, the in-process simulation and the real three-process cluster: `docs/REVOCATION.md`. Device classes, removal rules, deleted ids and the limits that remain: `docs/CORE_HARDENING.md`. Video walk-through of the core: `docs/DEMO_SCRIPT.md`. Architecture paragraphs: `docs/ARCHITECTURE_NOTES.md`. Measured revocation time, throughput and the clock-skew window: `docs/PERFORMANCE.md`. Scheduled backups, the smoke test, monitoring, rollback and audit-log size: `docs/OPERATIONS.md`.
 * Two-page brief: `docs/BRIEF.md`. Likely judge questions with evidence: `docs/QA.md`. How this relates to Vault and Sigstore Rekor: `docs/RELATED.md`.
 * Storage, journal, backup, the signed manifest and the standalone verifier (`verifier/prism_verify.py`): `docs/CORE.md`.
 * Cryptography, known-answer tests, naming: `docs/CRYPTO.md`.
@@ -70,7 +70,7 @@ python -m pytest -q            # the full suite
 | Core objective | Where to see it |
 | --- | --- |
 | Normal operation | `python -m kig.demo` step 1, `tests/test_service.py::test_normal_operation` |
-| Security control | `report_lost` / `revoke_device` / `disable_user` commands, rules R1 to R5 in `kig/detect.py` |
+| Security control | `report_lost` / `revoke_device` / `disable_user` commands, rules R1 to R9 in `kig/detect.py` |
 | Reliability | stale or replayed requests, epoch conflicts, restart recovery, crash between audit and state (fails closed): `tests/test_service.py` |
 | Verifiable outcome | every decision is a signed, hash-chained audit entry; each alert lists the audit sequence numbers that triggered it |
 
@@ -142,8 +142,10 @@ First start creates `data/server_sign.key`, `data/operator.token` (both mode 060
 
 Alerts are structured. Each one carries `rule`, `severity`, `explanation`, `evidence` (audit sequence numbers),
 `device`, `user`, `service` (the node that raised it), `event` (the audit entry type that triggered it), `source`
-(network source, when the request was logged) and `actor`. A value the audit entry does not hold is the string
-`unknown`; it is never guessed. The suppressed-burst alert (R3) has no single identity, so it says `unknown`.
+(network source, when the request was logged) and `actor`, plus `services` (the nodes involved, a list) and `files` (the
+files involved, a list; empty unless the rule is about file access). A value the audit entry does not hold is the string
+`unknown`; it is never guessed. The suppressed-burst alert (R3) and bursts from an unenrolled device have no identity we can
+trust, so they say `unknown`.
 
 `python -m kig.bench_detect` (default 20 runs per scenario) builds a fresh in-process service for each run, replays a benign trace, then runs nine
 labelled attack scenarios 20 times each. Time to alert runs from the first malicious request to the alert:
@@ -154,8 +156,8 @@ run (Linux x86_64, Python 3.12; wall times depend on the machine):
 | --- | --- |
 | Benign requests replayed | 1,265 |
 | False alerts | 0 (0.0 per 1,000 requests) |
-| Attack runs (9 scenarios x 20) | 180: 120 detected, 60 missed, 0 false positives |
-| Precision / recall / F1 | 1.000 / 0.667 / 0.800 |
+| Attack runs (11 scenarios x 20) | 220: 180 detected, 40 missed, 0 false positives |
+| Precision / recall / F1 | 1.000 / 0.818 / 0.900 |
 
 | Scenario | Caught | Median wall ms (min-max) | Median service-clock s |
 | --- | --- | --- | --- |
@@ -165,12 +167,16 @@ run (Linux x86_64, Python 3.12; wall times depend on the machine):
 | flood of unknown device ids, summary alert (R3) | 20/20 | 67.8 (58.1-79.1) | 61 |
 | fresh account promoted to admin (R4) | 20/20 | 6.9 (5.5-11.2) | 0 |
 | admin device removes the owner's limited phone (R5) | 20/20 | 7.1 (5.4-12.6) | 0 |
-| slow guessing, 2 bad signatures per 65 s for 11 minutes | 0/20 | not detected | |
+| slow guessing, 2 bad signatures per 65 s for 11 minutes (R8) | 20/20 | 61.7 (58.7-381.9) | 220 |
+| valid admin device reads 20 files in under a minute (R7) | 20/20 | 73.0 (66.2-84.3) | 14 |
+| valid member reads 5 files it never read before (R6) | 20/20 | 18.9 (15.3-26.2) | 15 |
 | member probes a file outside its list | 0/20 | not detected | |
-| valid admin device reads many files | 0/20 | not detected | |
+| valid insider reads one new file every 10 minutes | 0/20 | not detected | |
 
-How to read it. The three misses are in the denominator on purpose: the rules are thresholds over audit events and do
-not model slow attacks, probing with valid credentials or an insider with valid admin rights. The scenarios and the
+How to read it. The two misses are in the denominator on purpose: the rules are thresholds over audit events, so they do
+not flag a denied probe (it is a refusal, not an access pattern) or an insider who stays under every window by reading one
+new file every ten minutes. The access rules (R6, R7) and R8 are new and tuned by us on the same traces we test them on, so
+treat the thresholds as defaults for a small team, not as measured on real traffic. The scenarios and the
 rules were written by the same people, so this shows what the rules do on these traces and is not a claim about real
 traffic. The flood scenario waits for the one-minute summary, so its 61 s is the rule's design, not slowness.
 R5 fires the same way for the owner reporting a lost phone and for a thief holding the laptop; the alert says so.
@@ -211,6 +217,14 @@ The primary console is `web-p3/`: a React app in the red design contributed by A
 | R3-AUTH-FAILURE-BURST | high | 3 failed authentications for one device from one source in 60 s | alert only. Nobody is locked out; logging is rate bounded and summarised as `auth.failures_suppressed` |
 | R4-PRIVILEGE-ESCALATION | high, or critical if the user's first device was enrolled under 10 min earlier | a user becomes admin | recorded; demote with `set_role` |
 | R5-ADMIN-LIMITED-DEVICE-REMOVED | high | a limited device of an admin is removed | alert only; expected after a lost phone, a sign of a stolen acting device otherwise |
+| R6-LATERAL-MOVEMENT | high | a device that already had a read history (2 or more files older than 5 min) reads 4 files it never read before within 5 min | alert only; the reads were valid. A pattern, not proof; names the files |
+| R7-BULK-READ | critical for an admin's device, else high | one device reads 15 different files within 60 s | alert only; names the device, user and files |
+| R8-SLOW-GUESSING | medium | 8 failed authentications from one source within an hour (too slow for R3) | alert only; requests were already denied |
+| R9-CLOCK-SKEW | low | 3 requests from one device refused as stale (outside the +/-30 s window) within 60 s | alert only; states the offsets seen. A drifting device clock and replay of old traffic look alike |
+
+The rules see the service's own audit entries only. They do not read logs in another system's format: there is no adapter for
+the organizers' log format, and we do not have a sample of it. Anything that can write our audit entries (type, actor and data)
+can feed them.
 
 ## Layout
 

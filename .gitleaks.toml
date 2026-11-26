@@ -1,0 +1,5 @@
+# Secret scanners flag the frozen PRISM-1 test fixtures. They are throwaway keys that protect nothing; the README explains why
+# they are committed ("Test fixtures contain private keys"). Everything else is scanned.
+[allowlist]
+description = "frozen release-format fixtures"
+paths = ['''tests/fixtures/v1/''', '''tests/fixtures/make_v1\.py''']
