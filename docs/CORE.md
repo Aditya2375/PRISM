@@ -136,3 +136,18 @@ flips are all rejected (`tests/test_backup.py`).
   journal line, so replica writes cost grows with the number of files.
 * Single host. The cluster nodes in `kig/cluster.py` are in-process simulations with their own data
   directories, not separate machines.
+
+## Measured cost (`python -m kig.bench`)
+
+One run on a development machine (Python 3.10, in-process service, 2 KB files, medians, times in ms):
+
+| files | put | fetch | rotate | backup | restore | backup peak RAM | restore peak RAM | start-up replay |
+|---|---|---|---|---|---|---|---|---|
+| 100 | 6.0 | 2.6 | 12 | 51 | 109 | 8 MB | 10 MB | 40 |
+| 500 | 5.8 | 2.7 | 11 | 199 | 412 | 31 MB | 38 MB | 153 |
+| 2000 | 5.8 | 2.9 | 12 | 695 | 1489 | 118 MB | 141 MB | 169 |
+
+Put, fetch and rotate stay flat as the store grows (journaled state). Backup and restore are linear in time,
+and their memory grows with the number of files, because the sealed state metadata (about 7 KB per file with four
+devices) is built in memory. Blob bytes are streamed and do not add to peak memory. Treat the memory column as
+a known limit for stores beyond a few thousand files.
