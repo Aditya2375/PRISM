@@ -1,6 +1,6 @@
-# PRISM core: keys, vault, rotation, recovery, backup, storage
+# P.R.I.S.M. core: keys, vault, rotation, recovery, backup, storage
 
-PRISM (Post-quantum Resilient Identity & Security Management). This page covers the
+P.R.I.S.M. (Post-quantum Resilient Identity & Security Management). This page covers the
 key-management core. Behaviour described here is covered by tests; the test name is given
 where a claim could be doubted.
 

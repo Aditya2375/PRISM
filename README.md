@@ -1,4 +1,4 @@
-# PRISM
+# P.R.I.S.M.
 
 Post-quantum Resilient Identity & Security Management. Core design notes: `docs/CORE.md`; cryptography and claims: `docs/CRYPTO.md`.
 

@@ -1,4 +1,4 @@
-# Threat model (one page)
+# P.R.I.S.M. threat model (one page)
 
 ## Protected assets
 1. File contents (confidentiality and integrity).

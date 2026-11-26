@@ -1,11 +1,11 @@
-# PRISM cryptography: what we use, what we claim
+# P.R.I.S.M. cryptography: what we use, what we claim
 
 Suite id (written into every key file, vault file, state file and backup, refused if different):
 `PRISM-1:HPKE(MLKEM768-X25519,HKDF-SHA256,ChaCha20Poly1305)+AES-256-GCM+ML-DSA-65+scrypt`
 
 ## No custom crypto
-Every primitive is called from the pinned `cryptography>=50.0.2` package. PRISM does not implement a cipher,
-hash, KDF, KEM, signature scheme or mode, and does not combine two secrets itself. What PRISM writes is
+Every primitive is called from the pinned `cryptography>=50.0.2` package. P.R.I.S.M. does not implement a cipher,
+hash, KDF, KEM, signature scheme or mode, and does not combine two secrets itself. What P.R.I.S.M. writes is
 protocol glue: which key encrypts what, and what bound data goes into the associated data.
 
 | Need | Primitive (from `cryptography`) | Where |
@@ -37,12 +37,12 @@ context, which is what the library's API exposes.
 * Signatures are **post-quantum only** (ML-DSA-65). They are not hybridised with a classical signature, so
   authenticity rests on ML-DSA alone. This was a deliberate choice to avoid writing a composite scheme.
 * A revoked device keeps what it already decrypted. Rotation protects later versions only.
-* AES-GCM is not key-committing by itself. PRISM adds an HMAC commitment per file version and the client
+* AES-GCM is not key-committing by itself. P.R.I.S.M. adds an HMAC commitment per file version and the client
   checks it before using the plaintext.
 * Random 96-bit GCM nonces are safe here because each DEK encrypts one message. The vault and backup keys
   likewise encrypt one message per key or per salt.
 * Python cannot zeroise memory. Keys live in process memory while in use.
-* Libraries, not PRISM, are the trusted base for constant-time behaviour.
+* Libraries, not P.R.I.S.M., are the trusted base for constant-time behaviour.
 
 ## Format guard
 Unknown or missing suite ids are refused (`crypto.require_suite`). Frozen data written by this release is
