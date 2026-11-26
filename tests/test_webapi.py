@@ -280,3 +280,25 @@ def test_every_string_in_activity_is_capped(tmp_path):
     lost = [e for e in ents if e["type"] == "device.lost"][0]
     assert len(lost["data"]["reason"]) <= 200
     assert all(len(v) <= 200 for e in ents for v in e["data"].values() if isinstance(v, str))
+
+
+def test_delete_file_owner_and_admin_only_and_strict_body(tmp_path):
+    svc, _, _, a, r, *_ = world(tmp_path)
+    wa, wr = web(a), web(r)
+    mine = {"file_id": "ravi-note", "acl": ["ravi"], "content_b64": c.b64e(b"n")}
+    assert wr.post("/files", json=mine, headers=H).status_code == 200
+    wa.post("/files", json={"file_id": "salary", "acl": ["ravi"], "content_b64": c.b64e(b"s")}, headers=H)
+    # no token, wrong shapes
+    assert wr.post("/files/delete", json={"file_id": "ravi-note"}).status_code == 401
+    for bad in ({}, {"file_id": 1}, {"file_id": "ravi-note", "extra": 1}, {"file_id": "../x"}):
+        assert wr.post("/files/delete", json=bad, headers=H).status_code == 400
+    # a member cannot delete a file someone else owns, even one shared with them
+    g = wr.post("/files/delete", json={"file_id": "salary"}, headers=H)
+    assert g.status_code == 403 and "salary" in svc.state["files"]
+    # the owner can; an admin can delete a member's file
+    assert wr.post("/files/delete", json={"file_id": "ravi-note"}, headers=H).status_code == 200
+    wr.post("/files", json=mine, headers=H)
+    assert wa.post("/files/delete", json={"file_id": "ravi-note"}, headers=H).status_code == 200
+    assert wa.post("/files/delete", json={"file_id": "ravi-note"}, headers=H).status_code >= 400   # already gone
+    assert "ravi-note" not in svc.state["files"]
+    assert any(e["type"] == "file.deleted" for e in svc.audit.entries)

@@ -137,6 +137,14 @@ def create_web_app(client: Client, token: str, cors_origins: list[str] | None = 
         return Response(r, media_type="application/octet-stream",
                         headers={"Content-Disposition": "attachment; filename=\"download.bin\""})
 
+    @app.post("/files/delete")
+    async def delete(request: Request):
+        d = await body(request)
+        file_id = d.get("file_id")
+        if set(d) != {"file_id"} or not isinstance(file_id, str):
+            raise Denied("bad_request", "file_id (string) is the only field", 400)
+        return run(lambda: client.call("delete_file", file_id=file_id))
+
     @app.get("/devices")
     def devices():
         return run(lambda: client.call("my_devices"))
