@@ -121,7 +121,7 @@ def test_rotate_pending_cli_rekeys_flagged_files(w, tmp_path, capsys):
     cli_send = lambda env: w.svc.handle(env, "cli")
     orig, orig_client = cli._post, cli.Client
     cli._post = lambda url: cli_send
-    cli.Client = lambda dev, send: orig_client(dev, send, w.clock)
+    cli.Client = lambda dev, send, **kw: orig_client(dev, send, w.clock, **kw)
     try:
         w.clock.tick(1)
         cli.main(["rotate-pending", "--url", "http://x", "--key", str(tmp_path / "a.json")])

@@ -10,7 +10,7 @@ def _setup(w, tmp_path, monkeypatch):
     adm = tmp_path / "admin.json"; w.admin.dev.save(adm)
     monkeypatch.setattr(cli, "_post", lambda url: w.svc.handle)
     from kig.client import Client
-    monkeypatch.setattr(cli, "Client", lambda dev, tr: Client(dev, tr, w.clock))
+    monkeypatch.setattr(cli, "Client", lambda dev, tr, **kw: Client(dev, tr, w.clock, **kw))
     return new, pub, adm
 
 
