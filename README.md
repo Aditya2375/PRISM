@@ -90,6 +90,17 @@ python -m kig.cli keygen --user asha --device asha-phone --out asha-phone.json >
 python -m kig.cli enroll --url http://127.0.0.1:8443 --key asha-laptop.json --pub phone-pub.json --expect-fingerprint <fingerprint>
 ```
 
+Store a file, read it on the phone, report the phone lost, and check the evidence without the service:
+
+```bash
+python -m kig.cli put --url http://127.0.0.1:8443 --key asha-laptop.json --file-id doc --path a.txt
+python -m kig.cli get --url http://127.0.0.1:8443 --key asha-phone.json --file-id doc --out b.txt
+python -m kig.cli call --url http://127.0.0.1:8443 --key asha-laptop.json report_lost '{"device":"asha-phone"}'
+python -m kig.cli get --url http://127.0.0.1:8443 --key asha-phone.json --file-id doc --out c.txt   # denied: revoked
+python verifier/prism_verify.py audit --log data/audit.jsonl --pub data/server_sign.pub --anchor data/audit.head
+# exit 2 and a NOTE: the chain verifies, but only a head you recorded elsewhere (--expect-head) proves nothing was cut off the end
+```
+
 First start creates `data/server_sign.key`, `data/operator.token` (both mode 0600) and the audit log. Operator reads need header `X-KIG-Operator-Token`. Nothing secret is stored in the repository.
 
 ## API
