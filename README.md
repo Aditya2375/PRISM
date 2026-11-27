@@ -70,7 +70,7 @@ python -m pytest -q            # the full suite
 | Core objective | Where to see it |
 | --- | --- |
 | Normal operation | `python -m kig.demo` step 1, `tests/test_service.py::test_normal_operation` |
-| Security control | `report_lost` / `revoke_device` / `disable_user` commands, rules R1 to R9 in `kig/detect.py` |
+| Security control | `report_lost` / `revoke_device` / `disable_user` commands, rules R1 to R10 in `kig/detect.py`, outside logs through `kig/ingest.py` |
 | Reliability | stale or replayed requests, epoch conflicts, restart recovery, crash between audit and state (fails closed): `tests/test_service.py` |
 | Verifiable outcome | every decision is a signed, hash-chained audit entry; each alert lists the audit sequence numbers that triggered it |
 
@@ -142,36 +142,58 @@ First start creates `data/server_sign.key`, `data/operator.token` (both mode 060
 
 Alerts are structured. Each one carries `rule`, `severity`, `explanation`, `evidence` (audit sequence numbers),
 `device`, `user`, `service` (the node that raised it), `event` (the audit entry type that triggered it), `source`
-(network source, when the request was logged) and `actor`, plus `services` (the nodes involved, a list) and `files` (the
-files involved, a list; empty unless the rule is about file access). A value the audit entry does not hold is the string
-`unknown`; it is never guessed. The suppressed-burst alert (R3) and bursts from an unenrolled device have no identity we can
-trust, so they say `unknown`.
+(network source, when the request was logged) and `actor`, plus `services` (the raising node and every service named by
+the evidence, a list), `files` (the files involved; empty unless the rule is about file access), `identity`,
+`identity_verified`, `path` (services in the order reached, for R6-LATERAL-SERVICE) and `ordering`. `device` and `user`
+hold only proven values; otherwise they say `unknown`, never a guess. `identity` is always filled: the proven user or
+device, or for unauthenticated failures the id the sender claimed and its source (`identity_verified: false`). The
+per-minute suppressed-burst alert (R3) names the top five claimed ids and sources.
 
-`python -m kig.bench_detect` (default 20 runs per scenario) builds a fresh in-process service for each run, replays a benign trace, then runs nine
-labelled attack scenarios 20 times each. Time to alert runs from the first malicious request to the alert:
-wall milliseconds on this machine, and seconds on the service clock (the clock the rules use). Result on one
-run (Linux x86_64, Python 3.12; wall times depend on the machine):
+`ordering` is `uncertain` when the evidence holds events of one identity from different services less than 30 s apart:
+inside the +/-30 s skew we assume, their order is not known. An event arriving more than 30 s older than one already seen
+for that identity raises R10-OUT-OF-ORDER (low).
+
+Outside logs: `python -m kig.ingest logs.jsonl [--config map.json]` feeds JSON-lines or CSV logs from other services
+(identity, service, event, timestamp; every field name is configurable) into the same rules. See `docs/INGEST.md`.
+
+`python -m kig.bench_detect` (default 20 runs per scenario) builds a fresh in-process service for each run, replays a benign trace, then runs twelve
+labelled attack scenarios 20 times each, then a separate outside-log benchmark through `kig.ingest`. Time to alert runs
+from the first malicious request to the alert: wall milliseconds on this machine, and seconds on the service clock (the
+clock the rules use). Result on one run (Linux x86_64, 4 vCPU, Python 3.13; wall times depend on the machine):
 
 | Measure | Result |
 | --- | --- |
 | Benign requests replayed | 1,265 |
 | False alerts | 0 (0.0 per 1,000 requests) |
-| Attack runs (11 scenarios x 20) | 220: 180 detected, 40 missed, 0 false positives |
-| Precision / recall / F1 | 1.000 / 0.818 / 0.900 |
+| Attack runs (12 scenarios x 20) | 240: 200 detected, 40 missed, 0 false positives |
+| Precision / recall / F1 | 1.000 / 0.833 / 0.909 |
 
 | Scenario | Caught | Median wall ms (min-max) | Median service-clock s |
 | --- | --- | --- | --- |
-| lost device used after it was reported lost (R1) | 20/20 | 6.1 (4.3-11.1) | 0 |
-| captured request replayed from another source (R2) | 20/20 | 5.6 (3.2-7.6) | 0 |
-| three bad signatures in a minute from one source (R3) | 20/20 | 15.5 (12.1-20.9) | 2 |
-| flood of unknown device ids, summary alert (R3) | 20/20 | 67.8 (58.1-79.1) | 61 |
-| fresh account promoted to admin (R4) | 20/20 | 6.9 (5.5-11.2) | 0 |
-| admin device removes the owner's limited phone (R5) | 20/20 | 7.1 (5.4-12.6) | 0 |
-| slow guessing, 2 bad signatures per 65 s for 11 minutes (R8) | 20/20 | 61.7 (58.7-381.9) | 220 |
-| valid admin device reads 20 files in under a minute (R7) | 20/20 | 73.0 (66.2-84.3) | 14 |
-| valid member reads 5 files it never read before (R6) | 20/20 | 18.9 (15.3-26.2) | 15 |
+| lost device used after it was reported lost (R1) | 20/20 | 7.1 (4.5-17.4) | 0 |
+| captured request replayed from another source (R2) | 20/20 | 6.3 (3.9-10.8) | 0 |
+| three bad signatures in a minute from one source (R3) | 20/20 | 15.7 (12.1-40.7) | 2 |
+| flood of unknown device ids, summary alert (R3) | 20/20 | 55.2 (46.0-79.0) | 61 |
+| fresh account promoted to admin (R4) | 20/20 | 6.6 (4.8-16.2) | 0 |
+| admin account created, first device enrolled 60 s later (R4 critical, fires on the enrolment) | 20/20 | 17.1 (13.0-23.2) | 0 for the high alert, 60 for the critical one |
+| admin device removes the owner's limited phone (R5) | 20/20 | 7.9 (6.3-11.5) | 0 |
+| slow guessing, 2 bad signatures per 65 s for 11 minutes (R8) | 20/20 | 113.3 (89.6-163.6) | 220 |
+| valid admin device reads 20 files in under a minute (R7) | 20/20 | 107.4 (87.5-200.4) | 14 |
+| valid member reads 5 files it never read before (R6) | 20/20 | 29.2 (22.3-41.4) | 15 |
 | member probes a file outside its list | 0/20 | not detected | |
 | valid insider reads one new file every 10 minutes | 0/20 | not detected | |
+
+Outside logs (`kig.ingest`, synthetic: 40 identities, 6 services, 8 hours, per-service clock offsets up to 20 s):
+
+| Measure | Result |
+| --- | --- |
+| Benign events | 2,470, 0 false alerts (0.0 per 1,000). Five other seeds of the same generator: 1 false alert in 12,231 events (0.08 per 1,000) |
+| Established identity reaches a new service (R6-LATERAL-SERVICE) | caught, on the event itself (0 s) |
+| New identity hops web -> files -> hr in 40 s (R6-LATERAL-SERVICE) | caught, 40 s after the first hop (needs the third service) |
+| Three failed logins in a minute (R3) | caught, 20 s (on the third) |
+| Revoked credential used (R1) | caught, 0 s |
+| Admin created, first credential 60 s later (R4 critical) | caught, 60 s (on the enrolment) |
+| Precision / recall / F1 | 1.0 / 1.0 / 1.0 on 5 scenarios we wrote. That says the rules do what we built them for, not that they will score this on unseen data. |
 
 How to read it. The two misses are in the denominator on purpose: the rules are thresholds over audit events, so they do
 not flag a denied probe (it is a refusal, not an access pattern) or an insider who stays under every window by reading one
@@ -245,6 +267,7 @@ kig/bench_detect.py false alerts per 1,000 benign requests, time to alert, preci
 kig/demo.py      the lost-device story
 verifier/        standalone audit, backup and state verifier (no kig imports)
 kig/detect.py    explainable rules
+kig/ingest.py    feeds outside JSON-lines / CSV logs to the rules (docs/INGEST.md)
 kig/service.py   identity directory, access decisions, revocation, recovery
 kig/client.py    device-side crypto and request signing
 kig/api.py       FastAPI app
@@ -253,13 +276,15 @@ kig/server.py    app factory used by uvicorn (`kig.server:app`)
 tests/           pytest suite
 ```
 
-## Test fixtures contain private keys
+## No committed keys
 
-`tests/fixtures/v1/` holds frozen data written by release format PRISM-1: `server_sign.key`, `backup.key`,
-`alice-laptop.key.json` and a passphrase in `tests/fixtures/make_v1.py`. They are throwaway keys that protect nothing,
-and secret scanners will flag them. They are committed on purpose: the test opens bytes written by an older release
-to prove the current code still reads them, which cannot be done with keys generated at test time. Apart from the published NIST
-known-answer vectors in `tests/vectors/` (public test data), no test uses a committed key. The service and the demo generate all of their keys at first start.
+The repository holds no private key and no passphrase. Tests that need on-disk PRISM-1 data (`tests/test_frozen_format.py`)
+generate it at run time with fresh keys and a random passphrase (`v1_data` in `tests/conftest.py`), and a test fails if a key file
+or the old fixture passphrase reappears in the tree. The only committed test data is the published NIST known-answer vectors in
+`tests/vectors/` (public). The service and the demo generate all of their keys at first start.
+
+Trade-off, stated plainly: because the fixture is written by the current code, the suite checks that restart and backup restore
+round-trip and that no PRISM-1 field was removed or renamed, but it no longer opens bytes written by an older build.
 
 ## Licence
 

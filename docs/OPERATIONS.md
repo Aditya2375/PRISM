@@ -43,8 +43,8 @@ other smoke test: it follows the README from a fresh copy and runs in CI.
 
 ## Rollback
 
-* A bad deploy: redeploy the previous code revision. The data directory is plain files and the on-disk format is frozen and tested
-  against old data (`tests/test_frozen_format.py`), so older data opens with newer code. Going back to older code on data written
+* A bad deploy: redeploy the previous code revision. The data directory is plain files and `tests/test_frozen_format.py` checks
+  that no PRISM-1 field was removed or renamed. It generates its data at test time, so it does not open bytes from an older build. Going back to older code on data written
   by newer code is not tested.
 * Bad data (for example a rolled-back or damaged directory): restore a verified backup. The restore refuses an older backup
   than the live counter unless you say so, and it records the waiver in the audit log.

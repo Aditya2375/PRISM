@@ -124,11 +124,11 @@ class Client:
         self.state_path = Path(state_path) if state_path else None
         self.seen_epoch: dict[str, int] = {}   # newest key version this client has seen per file
         self.rotation_errors: list[str] = []   # auto-rotation failures other than a lost race
-        self.pins: dict[str, Any] = {"signers": {}, "owners": {}, "writers": {}, "writer_users": {}, "admins": {}, "roots": []}   # first-seen signer keys and file owners
+        self.pins: dict[str, Any] = {"signers": {}, "owners": {}, "writers": {}, "writer_users": {}, "admins": {}, "roots": [], "revoked": []}   # first-seen signer keys and file owners
         if self.state_path and Path(str(self.state_path) + ".pins").exists():
             try:
                 self.pins = json.loads(Path(str(self.state_path) + ".pins").read_text())
-                self.pins.setdefault("writers", {}); self.pins.setdefault("writer_users", {}); self.pins.setdefault("admins", {}); self.pins.setdefault("roots", []); self.pins["signers"], self.pins["owners"]
+                self.pins.setdefault("writers", {}); self.pins.setdefault("writer_users", {}); self.pins.setdefault("admins", {}); self.pins.setdefault("roots", []); self.pins.setdefault("revoked", []); self.pins["signers"], self.pins["owners"]
             except (ValueError, OSError, TypeError, KeyError):
                 raise c.CryptoError("client pin file is damaged; refusing to start without it") from None
         if self._roots and set(self.pins.get("roots", [])) - set(self._roots):
@@ -250,7 +250,19 @@ class Client:
         return body
 
     def call(self, cmd: str, **args: Any) -> dict[str, Any]:
-        return self.send(self.envelope(cmd, args))
+        r = self.send(self.envelope(cmd, args))
+        if cmd in ("revoke_device", "report_lost") and isinstance(args.get("device"), str):
+            self._note_revoked([args["device"]])
+        return r
+
+    def _note_revoked(self, ids: Any) -> None:
+        """Remember revoked device ids for good (ids are never reused). Once this client has seen a device revoked,
+        a server that lists it again, or marks it active again, is refused. Kept in the pin file across restarts."""
+        known = self.pins.setdefault("revoked", [])
+        new = sorted({i for i in (ids or []) if isinstance(i, str)} - set(known))
+        if new:
+            known.extend(new)
+            self._save_pins()
 
     # -- key wrapping ----------------------------------------------------------
     def _wrap_for(self, dek: bytes, file_id: str, epoch: int, recipients: dict[str, str]) -> dict[str, Any]:
@@ -402,11 +414,17 @@ class Client:
         return user, sp, kp
 
     def _directory(self, ids: list[str]) -> dict[str, Any]:
-        r = self.call("directory", devices=sorted(set(ids)))
-        d = r.get("devices") if isinstance(r, dict) else None
-        if not isinstance(d, dict):
-            raise c.CryptoError("the directory reply is unreadable")
-        return d
+        ids, out = sorted(set(ids)), {}
+        for i in range(0, len(ids), 64):       # the service answers at most 64 ids per request
+            r = self.call("directory", devices=ids[i:i + 64])
+            d = r.get("devices") if isinstance(r, dict) else None
+            if not isinstance(d, dict):
+                raise c.CryptoError("the directory reply is unreadable")
+            out.update(d)
+            rv = r.get("revoked")
+            self._note_revoked((rv if isinstance(rv, list) else [])
+                               + [k for k, v in d.items() if isinstance(v, dict) and v.get("status", "active") != "active"])
+        return out
 
     def _ensure_roots(self) -> None:
         if self._root_list() or not self.tofu_root:
@@ -440,24 +458,30 @@ class Client:
         if not self.verify_directory:
             return
         self._ensure_roots()
+        need = [d for d in devs if d != self.dev.device_id and d not in self._trusted]
+        dirm = self._directory(need) if need else {}
+        gone = set(self.pins.get("revoked", []))
+        for d in devs:
+            if d in gone:
+                raise c.CryptoError(f"the server listed device {d} as a recipient, but it was revoked; refusing to wrap a key for it")
         if not self._root_list():
             return
-        need = [d for d in devs if d != self.dev.device_id and d not in self._trusted]
-        if need:
-            dirm = self._directory(need)
         for d, kem in devs.items():
             if d == self.dev.device_id:
                 if kem != c.b64e(self.dev.kem_pub):
                     raise c.CryptoError("the server listed a different key for this device")
                 continue
-            duser, _, kp = self._prove(d, dirm) if d not in self._trusted else self._trusted[d]
+            duser, _, kp = self._prove(d, dirm)
             if acl is not None and duser not in acl:
                 raise c.CryptoError(f"the server listed device {d} of user {duser}, who is not on the file's access list")
             if kp != kem:
                 raise c.CryptoError(f"the key listed for device {d} differs from the one in its signed enrolment")
 
     def _recipients(self, acl: list[str]) -> dict[str, str]:
-        devs = self.call("eligible", users=acl)["devices"]
+        r = self.call("eligible", users=acl)
+        devs = r["devices"]
+        if isinstance(r.get("revoked"), list):
+            self._note_revoked(r["revoked"])
         self._check_devices(devs, acl)
         return devs
 

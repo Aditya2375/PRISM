@@ -31,7 +31,7 @@ someone who does not trust the service.**
   the audit log, a backup or the state snapshot with no service code and no private key.
 * **Backup and restore.** Signed, sealed to an offline key, streamed; restore needs evidence about rollback or an
   audited waiver. The backup key can be split k-of-n.
-* **Explainable detection.** Nine rules (revoked-device use, replay, auth-failure burst, privilege escalation, removal of an admin's limited device, lateral movement, bulk read, slow guessing, clock skew). No ML. Alerts name the device, user, node, triggering event, source, services and files (`unknown` when not logged).
+* **Explainable detection.** Eleven rules (revoked-device use, replay, auth-failure burst, privilege escalation, removal of an admin's limited device, lateral movement between files and between services, bulk read, slow guessing, clock skew, out-of-order events). No ML. Every alert names an identity (marked as claimed when it is not proven), the services in its evidence, the triggering event, and whether event order is uncertain. Outside logs feed the same rules through `kig.ingest`.
   Measured with `python -m kig.bench_detect` on one machine: 0 false alerts in 1,265 benign requests (0.0 per
   1,000); eleven labelled attack scenarios x 20 runs, precision 1.00, recall 0.82, F1 0.90, median time to alert 3 to
   75 ms wall (0 to 220 s on the service clock) for the rules that fire. Two scenarios (a denied probe,

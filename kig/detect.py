@@ -24,6 +24,11 @@ SLOW_WINDOW_S = 3600
 SLOW_FAILURES = 8             # failed authentications from one source inside SLOW_WINDOW_S (spread thin, they stay under the burst rule)
 SKEW_WARN_COUNT = 3           # stale-timestamp rejections from one device inside BURST_WINDOW_S
 CLOCK_TOLERANCE_S = 30        # kig.service.SKEW_S: a signed request is accepted only within this many seconds of the node clock
+# Cross-service movement (R6-LATERAL-SERVICE). An identity's services are learned from what it touches.
+LATERAL_SERVICE_NEW = 1       # new services inside LATERAL_WINDOW_S that alert once the identity has an older baseline service
+LATERAL_SERVICE_CHAIN = 3     # distinct services reached inside LATERAL_WINDOW_S that alert even with no baseline (a fast hop chain)
+LATERAL_SERVICE_LEARN_S = 3600   # an identity seen for less than this is still learning its usual services (only a chain alerts)
+ADMIN_FIRST_DEVICE_S = FRESH_ACCOUNT_S   # R4 critical: an admin account created and its first device enrolled within this
 
 
 @dataclass
@@ -44,8 +49,15 @@ class Alert:
     event: str = "unknown"     # the audit entry type that triggered it
     source: str = "unknown"    # network source of the request, when one was logged
     actor: str = "unknown"     # the device that performed the action, when the event is an action
-    services: list[str] = field(default_factory=list)   # nodes involved (filled in by the detector)
+    services: list[str] = field(default_factory=list)   # the raising node plus every service named by the evidence
     files: list[str] = field(default_factory=list)      # files involved, for access-pattern rules
+    # who the alert is about, always named: the proven user or device, or else the identity the sender CLAIMED
+    # (identity_verified False), or else the network source. "unknown" only when no event carried any of them.
+    identity: str = "unknown"
+    identity_verified: bool = True
+    path: list[str] = field(default_factory=list)       # services in the order the identity reached them (R6-LATERAL-SERVICE)
+    ordering: str = "certain"  # "uncertain": evidence from different services lies within +/-CLOCK_TOLERANCE_S, so order is not known
+    ordering_note: str = ""
 
     def as_data(self) -> dict[str, Any]:
         return {
@@ -63,6 +75,11 @@ class Alert:
             "actor": self.actor,
             "services": list(self.services),
             "files": list(self.files),
+            "identity": self.identity,
+            "identity_verified": self.identity_verified,
+            "path": list(self.path),
+            "ordering": self.ordering,
+            "ordering_note": self.ordering_note,
         }
 
 
@@ -83,23 +100,120 @@ class Detector:
     reads: dict[str, list[tuple[float, int, str]]] = field(default_factory=dict)   # device -> (ts, seq, file)
     src_failures: dict[str, list[tuple[float, int]]] = field(default_factory=dict)  # source -> (ts, seq)
     stale: dict[str, list[tuple[float, int, float]]] = field(default_factory=dict)  # device -> (ts, seq, skew)
+    seq_info: dict[int, list] = field(default_factory=dict)      # seq -> [ts, service, ordering uncertain]
+    last_seen: dict[str, tuple[float, int, str]] = field(default_factory=dict)   # identity -> (newest ts, seq, service)
+    seen_services: dict[str, dict[str, float]] = field(default_factory=dict)  # identity -> service -> first time
+    svc_hops: dict[str, list[tuple[float, int, str]]] = field(default_factory=dict)  # identity -> (ts, seq, new service)
+    pending_admin: dict[str, tuple[float, int]] = field(default_factory=dict)  # new admin with no device yet -> (ts, seq)
+
+    def _bound(self, m: dict) -> None:
+        if len(m) > self.max_tracked:
+            m.pop(next(iter(m)))
 
     def observe(self, entry: dict[str, Any]) -> list[Alert]:
         t, seq, ts, d = entry["type"], entry["seq"], entry["ts"], entry["data"]
-        alerts: list[Alert] = []
         actor = entry.get("actor", "?")
         src = d.get("source") if isinstance(d.get("source"), str) and d.get("source") else "unknown"
-        alerts = self._observe(entry, t, seq, ts, d, actor, src)
+        svc = d.get("service") if isinstance(d.get("service"), str) and d.get("service") else self.service
+        who = self._who(t, d, actor)
+        self.seq_info[seq] = [ts, svc, False]
+        self._bound(self.seq_info)
+        alerts = self._ordering(seq, ts, svc, who) if who else []
+        alerts += self._observe(entry, t, seq, ts, d, actor, src)
+        if who and t in ("access.granted", "access.granted_grace"):
+            alerts += self._service_rule(seq, ts, svc, who)
         for a in alerts:
             a.service, a.event = self.service, t
-            a.services = [self.service]
             if a.source == "unknown":
                 a.source = src
             if a.actor == "unknown" and actor != "?":
                 a.actor = str(actor)
             if a.user == "unknown" and a.device != "unknown" and not a.rule.startswith("R3-"):
                 a.user = self.owner_of.get(a.device, "unknown")
+            info = [self.seq_info[x] for x in a.evidence if x in self.seq_info]
+            a.services = sorted({self.service, svc, *a.services, *(i[1] for i in info)})
+            if any(i[2] for i in info):
+                a.ordering = "uncertain"
+                a.ordering_note = a.ordering_note or (
+                    f"some evidence comes from different services within +/-{CLOCK_TOLERANCE_S}s of each other; with that much "
+                    "clock skew the order of those events is not known")
+            if a.identity == "unknown":
+                if a.user != "unknown":
+                    a.identity = a.user
+                elif a.device != "unknown":
+                    a.identity = a.device
+                elif a.subject and a.subject != "unauthenticated":
+                    a.identity, a.identity_verified = a.subject, False
+                elif a.source != "unknown":
+                    a.identity, a.identity_verified = f"unauthenticated sender at {a.source}", False
         return alerts
+
+    def _who(self, t: str, d: dict[str, Any], actor: Any) -> str:
+        """The identity an event is about, for ordering and cross-service tracking: the user if known, else the
+        (possibly only claimed) device id. Empty for service-internal events."""
+        dev = d.get("device") if isinstance(d.get("device"), str) and d.get("device") else None
+        u = d.get("user") if isinstance(d.get("user"), str) and d.get("user") else None
+        if t.startswith("auth.") and t != "auth.revoked_device_use":
+            return dev or ""                    # a claim; never resolved to a user
+        if t.startswith(("access.", "ext.", "auth.")):
+            return u or (self.owner_of.get(dev, dev) if dev else "") or ("" if actor in ("?", "service", "operator", "detector") else str(actor))
+        return ""
+
+    def _ordering(self, seq: int, ts: float, svc: str, who: str) -> list[Alert]:
+        """Mark events whose order cannot be known. Different services have different clocks, so two events of one
+        identity from different services less than CLOCK_TOLERANCE_S apart may have happened in either order. An event
+        that arrives more than CLOCK_TOLERANCE_S older than one already seen is outside the stated skew: R10."""
+        prev = self.last_seen.get(who)
+        out: list[Alert] = []
+        if prev is not None:
+            pts, pseq, psvc = prev
+            if abs(ts - pts) <= CLOCK_TOLERANCE_S and psvc != svc:
+                self.seq_info[seq][2] = True
+                if pseq in self.seq_info:
+                    self.seq_info[pseq][2] = True
+            elif pts - ts > CLOCK_TOLERANCE_S and not self._dup(f"R10:{who}", pts):
+                out.append(Alert(
+                    "R10-OUT-OF-ORDER", "low",
+                    f"An event for {who} from service {svc} is stamped {pts - ts:.0f}s before an event already seen from "
+                    f"{psvc}. That is more than the +/-{CLOCK_TOLERANCE_S}s clock skew this system assumes, so the log was "
+                    "delayed, replayed or a clock is wrong. Alerts that depend on event order for this identity may be wrong.",
+                    [pseq, seq], response="recorded", subject=who, identity=who,
+                    ordering="uncertain", ordering_note="arrival order and timestamps disagree beyond the stated skew"))
+        if prev is None or ts >= prev[0]:
+            self.last_seen[who] = (ts, seq, svc)
+            self._bound(self.last_seen)
+        return out
+
+    def _service_rule(self, seq: int, ts: float, svc: str, who: str) -> list[Alert]:
+        """R6-LATERAL-SERVICE: a valid identity reaches a service it has never used before. Each service is new to an
+        identity once, so this fires at most once per (identity, service) and needs no dedupe."""
+        known = self.seen_services.setdefault(who, {})
+        self._bound(self.seen_services)
+        if svc in known:
+            return []
+        known[svc] = ts
+        hops = [x for x in self.svc_hops.get(who, []) if ts - x[0] <= LATERAL_WINDOW_S] + [(ts, seq, svc)]
+        self.svc_hops[who] = hops
+        self._bound(self.svc_hops)
+        baseline = sorted((t0, s) for s, t0 in known.items() if ts - t0 > LATERAL_WINDOW_S)
+        fresh = [x for x in hops if known.get(x[2]) == x[0]]
+        if baseline and ts - baseline[0][0] < LATERAL_SERVICE_LEARN_S:
+            baseline = []                      # still learning this identity's usual services
+        if baseline:
+            if len(fresh) < LATERAL_SERVICE_NEW:
+                return []
+        elif len(fresh) < LATERAL_SERVICE_CHAIN:
+            return []
+        path = ([baseline[-1][1]] if baseline else []) + [x[2] for x in fresh]
+        sev = "high" if len(fresh) >= 2 else "medium"
+        return [Alert(
+            "R6-LATERAL-SERVICE", sev,
+            f"{who} reached service {svc}, which it had never used before. Path: {' -> '.join(path)} "
+            f"({len(fresh)} new service{'s' if len(fresh) != 1 else ''} within {LATERAL_WINDOW_S}s"
+            + (f", after a history on {', '.join(s for _, s in baseline[-3:])})." if baseline else ", with no earlier history).")
+            + " A valid identity moving to new systems is how an intruder spreads; a new job duty looks the same.",
+            [x[1] for x in fresh], response="recorded; access was allowed", subject=who, identity=who,
+            user=who, path=path)]
 
     def _observe(self, entry: dict[str, Any], t: str, seq: int, ts: float, d: dict[str, Any], actor: str, src: str) -> list[Alert]:
         alerts: list[Alert] = []
@@ -128,6 +242,17 @@ class Detector:
                 )
             )
         if t == "device.enrolled":
+            first = d["user"] not in self.first_device_ts
+            pend = self.pending_admin.pop(str(d["user"]), None)
+            if first and pend is not None and ts - pend[0] < ADMIN_FIRST_DEVICE_S and str(d["user"]) in self.admins:
+                # once per account (the pending entry is consumed) and only inside the window, so it never repeats
+                alerts.append(Alert(
+                    "R4-PRIVILEGE-ESCALATION", "critical",
+                    f"Admin account {d['user']} was created and its first device ({d.get('device')}) enrolled by "
+                    f"{d.get('by', actor)} {ts - pend[0]:.0f}s later. A new admin with a working device is full control of "
+                    "the service; confirm out of band that this was planned.",
+                    [pend[1], seq], response="recorded; demote with set_role or revoke the device to undo",
+                    subject=str(d["user"]), user=str(d["user"]), device=str(d.get("device") or "unknown")))
             self.first_device_ts.setdefault(d["user"], ts)
             if d.get("device"):
                 self.owner_of[str(d["device"])] = str(d["user"])
@@ -149,6 +274,7 @@ class Detector:
                     response="denied; device stays blocked",
                     subject=dev,
                     device=str(dev),
+                    user=str(d.get("user") or "unknown"),
                 )
             )
         elif t == "auth.replay":
@@ -167,16 +293,22 @@ class Detector:
                 )
             )
         elif t == "auth.failures_suppressed":
+            top = [x for x in (d.get("top") or []) if isinstance(x, dict)][:5]
             alerts.append(
                 Alert(
                     "R3-AUTH-FAILURE-BURST",
                     "high",
                     f"{d['count']} further failed or limited requests in minute {d['minute']} were counted but "
-                    "not logged one by one. Look at the earlier auth.* entries for the sources involved.",
+                    "not logged one by one. " + (
+                        "Most came from: " + "; ".join(f"{x.get('count')} claiming '{x.get('claimed')}' from {x.get('source')}"
+                                                     for x in top) + ". These ids are claims, not proven identities."
+                        if top else "Look at the earlier auth.* entries for the sources involved."),
                     [seq],
                     response="requests denied and rate limited; nobody is locked out",
                     subject="unauthenticated",
                     source="unknown",
+                    identity=", ".join(f"{x.get('claimed')}@{x.get('source')}" for x in top) or "unauthenticated senders",
+                    identity_verified=False,
                 )
             )
         elif t in ("auth.bad_signature", "auth.unknown_device"):
@@ -206,6 +338,8 @@ class Detector:
                         device=claimed if known else "unknown",
                         user=self.owner_of[claimed] if known else "unknown",
                         source=source,
+                        identity=claimed,
+                        identity_verified=False,
                     )
                 )
                 self.failures[key] = []
@@ -216,11 +350,16 @@ class Detector:
         elif t == "role.changed" and d.get("new") == "admin" and d.get("old") != "admin":
             born = self.first_device_ts.get(d["user"])
             fresh = born is not None and ts - born < FRESH_ACCOUNT_S
+            if born is None:
+                # no device yet: if its first device is enrolled soon, that is the critical case (see device.enrolled)
+                self.pending_admin[str(d["user"])] = (ts, seq)
+                self._bound(self.pending_admin)
             alerts.append(
                 Alert(
                     "R4-PRIVILEGE-ESCALATION",
                     "critical" if fresh else "high",
-                    f"User {d['user']} was promoted from {d.get('old')} to admin by {d['by']}"
+                    f"User {d['user']} was {'created as' if d.get('old') is None else 'promoted from ' + str(d.get('old')) + ' to'} "
+                    f"admin by {d.get('by', 'unknown')}"
                     + (" shortly after their first device was enrolled." if fresh else "."),
                     [seq],
                     response="recorded; demote with set_role to undo",

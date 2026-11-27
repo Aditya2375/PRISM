@@ -16,6 +16,9 @@ and measures the time until the last node refuses it. One run on the machine abo
 | Injected network delay | 0 ms (loopback, one clock) |
 | Node cut off from the others | served inside its 2 s lease, `node_stale` after the lease, `revoked` after healing |
 
+Re-run on a 4 vCPU Linux x86_64 machine, Python 3.13 (2026-11-27, same command): median 17.4 ms, min 14.0 ms, max 24.6 ms
+to the last node; per node median 15.8 ms and 16.1 ms; the partition check gave served, `node_stale`, `revoked`.
+
 An earlier run on the machine we used for the demo video gave about 35 ms; we quote "about 35 ms" when a single figure is needed. Runs differ by machine and load.
 The primary refuses the device at once, with no delay. The only waiting is for the replicas to receive the signed
 revocation. The 5 to 50 ms figure in the in-process simulation is a delay we inject on purpose, not a measurement.
@@ -32,6 +35,11 @@ revocation. The 5 to 50 ms figure in the in-process simulation is a delay we inj
 | backup of 100 files | 62 ms, 11.6 MB peak memory | |
 | restore | 113 ms, 12.8 MB peak memory | |
 | start-up replay of the audit log | 35 ms | |
+
+Re-run on a 4 vCPU Linux x86_64 machine, Python 3.13 (2026-11-27, same command): put 9.2 ms (about 110/s), fetch 3.8 ms
+(about 260/s), rotate 17.2 ms (about 60/s), backup 99 ms, restore 213 ms, start-up replay 46 ms. That machine is slower per
+core than the one above; the unchanged v2 code measured the same there (put 8.3 to 10.0 ms), so the new revocation and
+detection checks did not change these costs.
 
 Over HTTP the service handles one command at a time (a lock around the state keeps the audit log a single chain), so
 writes do not run in parallel. Commands run off the event loop, so `/healthz` and operator reads keep answering while a

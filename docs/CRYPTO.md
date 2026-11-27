@@ -68,7 +68,7 @@ tampering and cross-purpose rejection, and rely on the library for correctness.
 * Share files from `kig backup-key split` carry `v: 1` and are refused if the version differs; they have no suite field.
 * Unversioned: `revoked.log`, the audit log entries (signed, no suite field), and the client's seen-epoch file.
   Changing any of these would need a deliberate migration.
-Frozen data written by this release is opened by `tests/test_frozen_format.py`.
+`tests/test_frozen_format.py` writes PRISM-1 data at test time with fresh keys, reopens and restores it, and checks no PRISM-1 field was removed. It does not open bytes from an older build (no keys are committed).
 
 ## Naming
 P.R.I.S.M. is the project. `PRISM` is the repo and the string in identifiers. `kig` (Key Identity Guard) is the

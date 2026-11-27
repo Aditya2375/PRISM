@@ -67,3 +67,33 @@ def _no_ambient_passphrase(monkeypatch):
     """A passphrase left in the developer's environment must not change what the tests do."""
     for name in ("PRISM_PASSPHRASE", "KIG_DATA", "KIG_TRUSTED_PROXY", "KIG_PROXY_HOPS"):
         monkeypatch.delenv(name, raising=False)
+
+
+@pytest.fixture(scope="session")
+def v1_data(tmp_path_factory):
+    """PRISM-1 on-disk data written at test time: every key and the passphrase are generated fresh per run.
+
+    Nothing secret is committed. The price: this proves restart and restore round-trip with the current code, and the
+    format snapshot in test_frozen_format.py catches a silent layout change, but it no longer opens bytes written by
+    an older build."""
+    import secrets
+    from kig import backup, crypto as c
+    out = tmp_path_factory.mktemp("v1")
+    passphrase = secrets.token_urlsafe(24)
+    clock = Clock()
+    svc = GuardService(out / "data", clock=clock)
+    clock.tick(1)
+    a, bob = Device.generate("alice-laptop", "alice"), Device.generate("bob-laptop", "bob")
+    svc.bootstrap("alice", "alice-laptop", a.sign_pub, a.kem_pub)
+    ca = Client(a, svc.handle, clock)
+    ca.call("create_user", user="bob", role="member")
+    ca.call("enroll_device", **bob.public_args())
+    ca.put_file("report", b"frozen fixture plaintext", acl=["alice", "bob"])
+    clock.tick(40)
+    ca.call("revoke_device", device="bob-laptop")
+    a.save(out / "alice-laptop.key.json", passphrase)
+    pub, sec = c.kem_keygen()
+    (out / "backup.pub").write_bytes(pub)
+    (out / "backup.key").write_bytes(sec)
+    backup.create(svc, pub, out / "frozen.bak")
+    return out, passphrase

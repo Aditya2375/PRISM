@@ -211,8 +211,7 @@ signature on a newer one. Earlier builds accepted any writer key the service sup
 What it does not stop: first contact is trust on first use. The service is still trusted for who receives key wraps
 and for availability. The manifest covers the key commitment, which is bound to the ciphertext by the AEAD and the
 reader's key check, but it does not sign a hash of the ciphertext itself. Without a `state_path` (library use
-without persistence) pins last only as long as the Client object. Files without a manifest are refused. The frozen
-fixtures hold throwaway private keys on purpose.
+without persistence) pins last only as long as the Client object. Files without a manifest are refused.
 
 
 ## Standalone verifier

@@ -13,7 +13,7 @@ export default function Limits({ label }) {
           <li>The cluster nodes in this build share one machine, one clock and loopback. Sync is plain HTTP and needs TLS between hosts.</li>
           <li>A stolen full admin device is an admin until the host removes it. A limited device (a phone) never acts as an admin.</li>
           <li>Detection is rule based. It catches five kinds of events and misses slow attacks, probing with valid credentials and a valid insider.</li>
-          <li>An alert names a device and user only when an enrolled device failed a signature check. Otherwise it says unknown. Treat it as a lead, not proof.</li>
+          <li>An alert fills its device and user fields only when they are proven. For unauthenticated failures it names the identity the sender claimed, marked as claimed. Treat it as a lead, not proof.</li>
           <li>"Verify chain" is the service checking its own log. For independent proof run <span className="ad-mono">python verifier/prism_verify.py audit</span>.</li>
         </ul>
       </section>

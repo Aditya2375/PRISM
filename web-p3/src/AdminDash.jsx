@@ -6,7 +6,9 @@ import { clip, labelFor, shortHash, when } from "./format";
 const isSecurity = (t) => t.startsWith("auth.") || t === "alert.raised" || t === "device.lost" || t === "device.revoked";
 
 function Identity({ a }) {
-  const rows = [["device", a.device], ["user", a.user], ["node", a.service], ["event", a.event], ["source", a.source]];
+  const who = a.identity && a.identity !== "unknown" ? a.identity + (a.identity_verified === false ? " (claimed)" : "") : "";
+  const rows = [["identity", who], ["device", a.device], ["user", a.user], ["node", a.service], ["services", (a.services || []).join(", ")],
+    ["path", (a.path || []).join(" -> ")], ["event", a.event], ["source", a.source], ["ordering", a.ordering === "uncertain" ? "uncertain (within 30 s skew)" : ""]];
   return (
     <dl className="ad-ident">
       {rows.map(([k, v]) => <div key={k}><dt>{k}</dt><dd className={!v || v === "unknown" ? "dim" : ""}>{clip(v || "unknown", 64)}</dd></div>)}
@@ -84,7 +86,7 @@ export default function AdminDash({ api, onSignOut }) {
         <section className="ad-panel"><div className="ad-panel-title"><h2>Latest alerts</h2><button onClick={() => setPage("alerts")}>View all</button></div>
           {alerts.length === 0 && <p className="ad-empty">No alerts. The detector is watching the audit log.</p>}
           {[...alerts].reverse().slice(0, 4).map((a) => (
-            <div className="ad-alert-row" key={a.seq}><i className={a.severity} /><div><b>{clip(a.rule, 48)}</b><p>{clip(a.device || "unknown device", 40)} / {clip(a.user || "unknown user", 40)}</p></div><Pill tone={a.severity === "critical" ? "critical" : "high"}>{clip(a.severity, 12)}</Pill></div>))}
+            <div className="ad-alert-row" key={a.seq}><i className={a.severity} /><div><b>{clip(a.rule, 48)}</b><p>{clip(a.identity && a.identity !== "unknown" ? a.identity : (a.device || "unknown device"), 60)}</p></div><Pill tone={a.severity === "critical" ? "critical" : "high"}>{clip(a.severity, 12)}</Pill></div>))}
         </section>
         <section className="ad-panel"><div className="ad-panel-title"><h2>Recent activity</h2><button onClick={() => setPage("audit")}>View all</button></div>
           {audit.slice(0, 5).map((e) => (

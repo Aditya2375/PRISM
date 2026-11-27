@@ -155,6 +155,7 @@ class GuardService:
         self._ua_total = 0
         self._ua_post = 0
         self._ua_suppressed = 0
+        self._ua_top: dict[tuple[str, str], int] = {}   # (claimed id, source) -> suppressed count, this minute
         self._rate: dict[str, tuple[int, int]] = {}
         # Nonces are memory-only, so refuse anything signed before this process started.
         self.boot = self.clock()
@@ -538,13 +539,22 @@ class GuardService:
         if minute == self._ua_minute:
             return
         if self._ua_suppressed and self._ua_minute >= 0:
+            top = sorted(self._ua_top.items(), key=lambda kv: -kv[1])[:5]
             self._log("auth.failures_suppressed", "service",
                       {"minute": self._ua_minute, "count": self._ua_suppressed,
+                       "top": [{"claimed": k[0], "source": k[1], "count": v} for k, v in top],
                        "note": "failed, limited or retried requests beyond the per-minute logging budget"})
             self._persist()
         self._ua_minute, self._ua_src, self._ua_total, self._ua_suppressed = minute, {}, 0, 0
-        self._ua_post = 0
+        self._ua_post, self._ua_top = 0, {}
         self._rate = {k: v for k, v in self._rate.items() if v[0] == minute}
+
+    def _suppress(self, claimed: str) -> None:
+        """Count a request that is not logged line by line, and remember who it claimed to be (bounded)."""
+        self._ua_suppressed += 1
+        k = (str(claimed)[:64], self._src)
+        if k in self._ua_top or len(self._ua_top) < 256:
+            self._ua_top[k] = self._ua_top.get(k, 0) + 1
 
     RATE_TABLE_MAX = 20_000
     OVERFLOW_FACTOR = 100          # when the table is full, all new keys of one kind share ONE bucket this many times the limit
@@ -588,7 +598,7 @@ class GuardService:
             self._log(etype, actor, dict(data, source=self._src))
             self._persist()     # keep state.applied current so tail truncation is caught
         else:
-            self._ua_suppressed += 1
+            self._suppress(str(data.get("device") or actor))
         if over_src:
             raise Denied("rate_limited", "too many failed requests from this source", 429)
         raise Denied(code, reason)
@@ -619,7 +629,7 @@ class GuardService:
                 body["aud"] = env["aud"]
             canon = c.canonical(body)
         except Exception:  # noqa: BLE001  any malformed envelope is a clean 400, never a 500
-            self._ua_suppressed += 1
+            self._suppress("malformed-envelope")
             if self._rate_hit(f"srcfail:{self._src}", SOURCE_FAIL_PER_MIN, now):
                 raise Denied("rate_limited", "too many failed requests from this source", 429) from None
             raise Denied("bad_request", "malformed envelope", 400) from None
@@ -633,7 +643,7 @@ class GuardService:
                             {"device": dev_id, "cmd": cmd[:32]}, "unauthorized", "bad signature", pre_auth=True)
         # from here on the signature is valid for a known device
         if self._rate_hit(f"dev:{dev_id}", DEVICE_RATE_PER_MIN, now):
-            self._ua_suppressed += 1
+            self._suppress(dev_id)
             raise Denied("rate_limited", "too many requests from this device", 429)
         if aud != self.name:
             self._throttled("anon", self._src, "auth.wrong_audience", dev_id,
@@ -651,7 +661,7 @@ class GuardService:
             if seen[1] == self._src and seen[2] == bh:
                 # the identical request again from the same place: a network retry, not an attack.
                 # Refuse it (single use), do not alert, do not penalise the sender.
-                self._ua_suppressed += 1
+                self._suppress(dev_id)
                 raise Denied("replay", "request already processed; send a new one", 409)
             self._throttled("anon", f"{dev_id}@{self._src}", "auth.replay", dev_id,
                             {"device": dev_id, "cmd": cmd}, "replay", "nonce already used")
@@ -728,7 +738,8 @@ class GuardService:
         return {
             "devices": {
                 d: self.state["devices"][d]["kem_pub"] for d in self.eligible_devices(users)
-            }
+            },
+            "revoked": self._removed_ids(users),
         }
 
     def cmd_create_user(self, dev, user, role, args):
@@ -1260,6 +1271,12 @@ class GuardService:
                 if isinstance(env, dict) and isinstance(env.get("device"), str):
                     want.append(env["device"])
         return {"devices": out}
+
+    def _removed_ids(self, users: list[str]) -> list[str]:
+        """Removed device ids of these users, so a client remembers each revocation and refuses the device if it is
+        ever listed again. Only the users the caller asked about, so this tells no one about other users' devices."""
+        want = set(users)
+        return sorted(d for d, v in self.state["devices"].items() if v["status"] != "active" and v["user"] in want)
 
     def cmd_my_devices(self, dev, user, role, args):
         """The caller's own devices only: id, status, enrolment time. No keys, no other user's devices."""
