@@ -1,0 +1,225 @@
+
+/* From Uiverse.io by Peary74 - https://uiverse.io/Peary74/kind-cougar-54 */
+/* MIT License, Copyright (c) Peary74 (Peary) */
+@import "./AuthValidation.css";
+
+.login-screen {
+  min-height: 100vh;
+  width: 100%;
+  background: #000;
+  color: white;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 30px 20px;
+  font-family: Arial, sans-serif;
+  transform: translateY(-30px);
+}
+
+.login-container {
+  width: 100%;
+  max-width: 440px;
+}
+
+.login-brand {
+  text-align: center;
+  margin-bottom: 40px;
+}
+
+.login-brand h1 {
+  font-size: 3rem;
+  font-weight: 400;
+  letter-spacing: 0.3em;
+  margin-right: -0.3em;
+}
+
+.login-brand p {
+  margin-top: 12px;
+  color: #888;
+  font-size: 0.85rem;
+  line-height: 1.6;
+}
+
+.login-card {
+  background: #0b0b0b;
+  border: 1px solid #242424;
+  border-radius: 14px;
+  padding: 35px;
+  box-shadow: 0 0 40px rgba(255, 255, 255, 0.03);
+}
+
+.login-card h2 {
+  font-size: 1.7rem;
+  font-weight: 500;
+}
+
+.login-subtitle {
+  color: #888;
+  font-size: 0.9rem;
+  margin-top: 10px;
+  margin-bottom: 30px;
+}
+
+.form-group {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  margin-bottom: 22px;
+}
+
+.form-group label {
+  font-size: 0.9rem;
+  color: #ccc;
+}
+
+.form-group input {
+  width: 100%;
+  padding: 14px 15px;
+  background: #111;
+  border: 1px solid #303030;
+  border-radius: 7px;
+  outline: none;
+  color: white;
+  font-size: 0.95rem;
+  transition: border-color 0.2s ease;
+}
+
+.form-group input::placeholder {
+  color: #666;
+}
+
+.form-group input:focus {
+  border-color: #aaa;
+}
+
+/* LOGIN BUTTON */
+
+.login-button {
+  width: 100%;
+  padding: 14px;
+  margin-top: 8px;
+  border: none;
+  border-radius: 7px;
+  background: white;
+  color: black;
+  font-size: 1rem;
+  font-weight: 600;
+  cursor: pointer;
+
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+
+  transition: transform 0.3s ease;
+}
+
+.login-button img {
+  width: 20px;
+  height: 20px;
+  object-fit: contain;
+  mix-blend-mode: multiply;
+
+  transform-origin: center center;
+  transition: transform 0.7s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.login-button span {
+  display: block;
+  transition: opacity 0.6s ease-in-out;
+}
+
+
+
+.login-button:hover img {
+  transform: translateX(2em) scale(1.1);
+}
+
+.login-button span {
+  display: block;
+  opacity: 1;
+  transition: opacity 0.39s ease-in-out;
+}
+
+.login-button:hover span {
+  opacity: 0;
+}
+
+.login-button:active {
+  transform: scale(0.98);
+}
+
+/* RESPONSIVE */
+
+@media (max-width: 480px) {
+  .login-card {
+    padding: 25px 20px;
+  }
+
+  .login-brand h1 {
+    font-size: 2.5rem;
+  }
+}
+
+/* BRAND LOGO */
+
+.login-brand-header {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0;
+}
+
+.login-logo {
+  width: 110px;
+  height: 110px;
+  object-fit: contain;
+  flex-shrink: 0;
+}
+
+.login-brand h1 {
+  font-size: 3rem;
+  font-weight: 400;
+  letter-spacing: 0.15em;
+  margin-right: -0.15em;
+  transform: translateX(-10px);
+}
+
+.login-brand p {
+  margin-top: 1px;
+  color: #888;
+  font-size: 0.85rem;
+  line-height: 1.6;
+}
+
+
+/* ERROR VALIDATION */
+
+.input-error {
+  border-color: #ff3b3b !important;
+  animation: input-shake 0.3s ease-in-out;
+}
+
+.error-message {
+  color: #ff4d4d;
+  font-size: 0.78rem;
+  margin-top: 2px;
+}
+
+@keyframes input-shake {
+  0%, 100% {
+    transform: translateX(0);
+  }
+
+  25% {
+    transform: translateX(-4px);
+  }
+
+  50% {
+    transform: translateX(4px);
+  }
+
+  75% {
+    transform: translateX(-3px);
+  }
+}
