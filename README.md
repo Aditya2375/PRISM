@@ -36,6 +36,14 @@ The hosted demo runs on a free plan that sleeps when idle, so the first load can
 
 `--story` exits 1 if any of its checks fails. Every claim row it prints points at the step that shows it.
 
+## Offline use
+
+Checked on 27 Nov 2026 with the network switched off (empty network namespace, loopback only) from a fresh copy of the repository: `python -m kig.demo --story`, `python -m kig.demo --net`, `python -m kig.bench_detect`, the whole test suite (586 tests, run in six chunks) and the hosted console (`python -m hosted.run`, which serves the prebuilt `web-p3/hosted-dist/`) all worked. What needs a network once:
+
+* **Installing the Python packages.** `pip install -r requirements.lock` fetches wheels from PyPI. On a connected machine run `pip download -r requirements.lock -d wheels`, copy `wheels/` over, then `pip install --no-index --find-links wheels -r requirements.lock`. We checked the offline install with uv's offline cache (`uv pip install --offline -r requirements.lock`); the plain `pip download` route is standard pip and was not run here.
+* **`web-p3/run_demo.sh`** runs `npm ci` and a Vite build, so it needs npm and a network the first time. Offline, use `python -m hosted.run` instead: it starts the same demo story on one port and prints the tokens, with the console already built.
+* The hosted console loads no fonts or scripts from a CDN. The older build in `dist/` has one Google Fonts import and is not used by anything here.
+
 ## Architecture
 
 ```
