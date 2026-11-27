@@ -1,0 +1,47 @@
+/* Additions for the live-data console. The base look is the supplied admin shell (AdminDashboard.css). */
+.ad-pill.lost,.ad-pill.blocked,.ad-pill.needs-re-key{color:#d6918f;border-color:#462727;background:#1b1111}
+.ad-pill.needs-re-key{color:#d6b77c;border-color:#443920;background:#1b180f}
+.ad-pill.warn{color:#d6b77c;border-color:#443920;background:#1b180f}
+.ad-who{font-size:11px;color:#999}
+.ad-signout{padding:7px 12px;border:1px solid #333;border-radius:4px;background:#141414;color:#ccc;cursor:pointer;font-size:11px}
+.ad-signout:hover,.ad-heading>button:hover,.ad-primary:hover{border-color:#8e302e}
+.ad-stat.hot strong{color:#e07b78}
+.ad-ident{display:grid;grid-template-columns:repeat(5,1fr);gap:1px;background:#222;border:1px solid #222;border-radius:4px;margin:10px 0;overflow:hidden}
+.ad-ident div{background:#0c0c0c;padding:8px 10px;min-width:0}
+.ad-ident dt{font:11px monospace;color:#9b9895;letter-spacing:.07em;text-transform:uppercase}
+.ad-ident dd{margin-top:4px;font:11px monospace;color:#ddd;overflow-wrap:anywhere}
+.ad-ident dd.dim{color:#9a9794}
+.ad-alert-card{border:1px solid #2c2020;border-left:3px solid #d54441;border-radius:6px;background:#0f0b0b;padding:14px;margin-bottom:12px}
+.ad-alert-card.high{border-left-color:#cf9255;border-color:#2c2519;background:#0e0c09}
+.ad-alert-card header{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+.ad-alert-card p{margin:10px 0;line-height:1.55;font-size:12px;color:#cfcbc8}
+.ad-alert-card small{color:#9b9895}
+.ad-empty{color:#9b9895;padding:18px 4px;font-size:12px}
+.ad-mono{font-family:monospace}
+.ad-table-wrap tr.hl td{background:#150e0e}
+.ad-table-wrap td .ad-row-btn{margin-right:6px;padding:5px 9px;border:1px solid #333;border-radius:4px;background:#141414;color:#ccc;cursor:pointer;font-size:11px}
+.ad-table-wrap td .ad-row-btn.danger{color:#e09a98;border-color:#4a2a2a}
+.ad-form{display:grid;gap:10px;max-width:640px}
+.ad-form input,.ad-form textarea{background:#101010;border:1px solid #292929;border-radius:4px;color:#ddd;padding:8px 10px;font:12px monospace;width:100%}
+.ad-form input[type=file]::file-selector-button{margin-right:10px;padding:6px 10px;border:1px solid #333;border-radius:4px;background:#141414;color:#ccc;cursor:pointer}
+.ad-form label{font-size:11px;color:#999}
+.ad-fp{display:grid;grid-template-columns:repeat(4,auto);gap:6px 14px;justify-content:start;font:13px monospace;color:#eee;padding:10px;border:1px solid #292929;border-radius:4px;background:#0c0c0c}
+.ad-note{font-size:11px;color:#8d8a88;line-height:1.55;max-width:70ch}
+.ad-note.err{color:#e09a98}.ad-note.good{color:#9ac3a3}
+.ad-list{margin:6px 0 0 18px;line-height:1.7;font-size:12px;color:#bdb9b6}
+.ad-skel{height:90px;border-radius:8px;background:#111;margin-bottom:12px}
+@media (max-width:760px){.ad-ident{grid-template-columns:repeat(2,1fr)}.ad-who{display:none}}
+.ad-menu{display:none !important;background:#141414;color:#ccc;border:1px solid #333;border-radius:4px;padding:6px 10px;cursor:pointer}
+@media (max-width:900px){.ad-menu{display:inline-block !important}}
+.ad-pill.critical i,.ad-pill.lost i,.ad-pill.blocked i{background:#d54441}
+.ad-pill.high i,.ad-pill.needs-re-key i,.ad-pill.warn i{background:#cf9255}
+.selection-back{margin-top:22px;display:flex;justify-content:center}
+.selection-back button{padding:9px 18px;border:1px solid #333;border-radius:6px;background:#141414;color:#cdcbca;cursor:pointer;font-size:13px}
+.selection-back button:hover{border-color:#8e302e}
+.selection-icon{display:grid;place-items:center;height:34px}
+.selection-icon .ad-icon-svg{width:28px;height:28px}
+.ad-x{display:grid;place-items:center}
+.ad-modal button:focus-visible,.selection-card:focus-visible,.selection-back button:focus-visible{outline:2px solid #d54441;outline-offset:2px}
+.selection-options{align-items:stretch}
+.selection-card{display:flex;flex-direction:column;justify-content:flex-start;align-items:center}
+.selection-card p{min-height:4.5em}

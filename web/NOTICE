@@ -1,0 +1,4 @@
+PRISM web console. MIT licence (see ../LICENSE).
+Design, CSS, animations (border beam, count-up, reveal) and the logo were written for this project. No third-party component, CSS or image code is included.
+Build dependencies, both MIT licensed: React, Vite (and their own dependencies, see package-lock.json).
+Fonts: system fonts only. No remote assets.

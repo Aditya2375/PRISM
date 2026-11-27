@@ -1,0 +1,35 @@
+.auth-invalid,
+.input-error {
+  border-color: #D41514 !important;
+  box-shadow: 0 0 0 2px rgba(212, 21, 20, 0.16);
+}
+
+.auth-shake-a {
+  animation: auth-field-shake-a 360ms ease-in-out;
+}
+
+.auth-shake-b {
+  animation: auth-field-shake-b 360ms ease-in-out;
+}
+
+.error-message,
+.signup-form-field > small {
+  color: #D41514 !important;
+}
+
+@keyframes auth-field-shake-a {
+  0%, 100% { transform: translateX(0); }
+  20%, 60% { transform: translateX(-5px); }
+  40%, 80% { transform: translateX(5px); }
+}
+
+@keyframes auth-field-shake-b {
+  0%, 100% { transform: translateX(0); }
+  20%, 60% { transform: translateX(-5px); }
+  40%, 80% { transform: translateX(5px); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .auth-shake-a,
+  .auth-shake-b { animation: none; }
+}

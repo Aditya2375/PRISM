@@ -1,0 +1,37 @@
+name: ci
+on: [push, pull_request]
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - run: pip install -r requirements.txt
+      - run: python -m pytest -q
+      - run: python -m kig.demo --story
+      - run: python -m kig.bench --sizes 100
+      - run: python verifier/prism_verify.py --help
+      - run: python -m kig.demo --net
+      - run: bash scripts/readme_smoke.sh python
+  web:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        app: [web, web-p3]
+    defaults:
+      run:
+        working-directory: ${{ matrix.app }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - run: npm ci
+      - run: npm run lint
+      - run: npm test
+      - run: npm run build

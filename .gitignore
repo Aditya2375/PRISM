@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+data/
+*.key
+*.egg-info/
+# throwaway keys for format tests, see tests/fixtures/README.md
+!tests/fixtures/
+!tests/fixtures/**
