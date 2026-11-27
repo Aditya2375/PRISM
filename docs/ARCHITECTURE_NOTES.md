@@ -22,7 +22,7 @@ pulls a signed snapshot, certificates and blobs, and carries a signed freshness 
 confirmed it is current within its lease refuses every request with `node_stale`: it fails closed. A replica cut
 off from the primary can therefore still serve a lost device for up to one lease (2 seconds in the real-process
 test, 5 seconds in the in-process simulation), and after that it serves nobody until it syncs. On one machine, a
-revocation reached the last node in tens of milliseconds, about 35 ms on the machine we measured; `python -m kig.netcluster` prints the
+revocation reached the last node in tens of milliseconds, median 24.8 ms, slowest 53.3 ms in 20 runs on the machine we measured; `python -m kig.netcluster` prints the
 current figure.
 
 ## What this does not protect against

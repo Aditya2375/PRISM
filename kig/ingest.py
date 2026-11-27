@@ -102,6 +102,8 @@ def parse_ts(v: Any, fmt: str) -> float:
             x = float(v)
             if fmt == "epoch_ms" or (fmt == "auto" and x > 1e11):   # auto: past year 5138 in seconds means milliseconds
                 x /= 1000.0
+            if x != x or abs(x) > 1e15:      # NaN, infinity or an absurd value would slip past every time window
+                raise LineError(f"timestamp {v!r} is not a usable time")
             return x
         except (TypeError, ValueError):
             if fmt != "auto":

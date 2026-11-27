@@ -98,7 +98,7 @@ def metrics() -> Table:
     lab = ParagraphStyle("lab", fontName="Helvetica", fontSize=6.9, leading=8.3, textColor=MUTED)
     cells = [("0.0", "false alerts per 1,000 benign requests (1,265 replayed)"),
              ("F1 0.91", "precision 1.00, recall 0.83 over 12 labelled scenarios, 2 of them missed on purpose"),
-             ("about 35 ms", "revocation to the last of 3 real node processes; loopback, one clock, one machine"),
+             ("about 25 ms", "median revocation to the last of 3 real node processes (slowest of 20 runs 53 ms); loopback, one clock, one machine"),
              ("30 s | 0 | lease", "grace: rotation | revoked device | cut-off replica (2 s real, 5 s simulated)")]
     t = Table([[Paragraph(a, big) for a, _ in cells], [Paragraph(b, lab) for _, b in cells]], colWidths=[43.5 * mm] * 4)
     t.setStyle(TableStyle([("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#f2f6fa")), ("LINEAFTER", (0, 0), (-2, -1), 0.6, colors.white),
@@ -137,8 +137,8 @@ def page1(video: str) -> list:
                "previous version get a <b>30 s grace</b>, only for devices still eligible; then the node answers <i>key_version_retired</i>."))
     f.append(B("<b>Revocation across nodes.</b> Grace for a revoked device is <b>zero</b>. A replica cut off from the primary can still serve a lost "
                "device until its lease ends (2 s in the real-process harness, 5 s in the in-process simulation), then answers <i>node_stale</i>. "
-               "Measured on one machine with three real processes: the last node refused the device after about 35 ms on the machine we measured "
-               "(<i>python -m kig.netcluster</i>). That is loopback and one clock, not a network figure."))
+               "Measured on one machine with three real processes: the last node refused the device after a median 24.8 ms (slowest 53.3 ms, 20 runs) "
+               "(<i>python -m kig.demo --net</i>, docs/PERFORMANCE.md). That is loopback and one clock, not a network figure."))
     f.append(B("<b>Powerful devices.</b> A phone is enrolled <i>limited</i> and always acts as a plain member. Removing an admin's device or "
                "disabling an admin needs another admin whose device is at least 15 minutes old. Deleted file ids keep a tombstone."))
     f.append(B("<b>Backup integrity.</b> Backups are signed, sealed to an offline key and streamed. Any flipped byte, truncation, wrong key or "
@@ -152,8 +152,8 @@ def page1(video: str) -> list:
                "seen after 8 failures in an hour). Two scenarios are "
                "missed on purpose and counted: a denied probe with valid credentials, and a valid insider reading one new file every ten minutes. The scenarios and rules have the same authors, so this describes these traces, not real traffic. "
                "Wall times are from one Linux x86_64 machine and are not portable.", small))
-    f.append(P("Cost (<i>python -m kig.bench</i>, one run on a loaded machine; docs/CORE.md has the table): put 12 to 14 ms, fetch about 5 ms, rotate 20 to 25 ms, "
-               "backup of 2,000 files 2.4 s with about 143 MB peak, restore 4.0 s.", small))
+    f.append(P("Cost (<i>python -m kig.bench</i>, median per call on one 1-vCPU machine, docs/PERFORMANCE.md): put 5.8 ms, fetch 2.5 ms, rotate 10.7 ms, "
+               "backup of 100 files 62 ms, restore 113 ms.", small))
     return f
 
 
@@ -227,11 +227,12 @@ def page2(video: str) -> list:
                            ("TOPPADDING", (0, 0), (-1, -1), 2), ("BOTTOMPADDING", (0, 0), (-1, -1), 2), ("LEFTPADDING", (0, 0), (-1, -1), 2)]))
     f.append(t)
     f.append(Spacer(1, 5))
-    vt = video if video else "[5-minute demo video link: to be added]"
-    link = f'<link href="{video}" color="#1f4e79"><u>{vt}</u></link>' if video else vt
-    t = Table([[P(f"<b>5-minute demo video:</b> {link}", body)], [P(f"<b>Repository:</b> <link href=\"{REPO}\" color=\"#1f4e79\"><u>{REPO}</u></link> "
-                                                                     "&nbsp; Run it: <i>python -m kig.demo --story</i>, <i>python -m kig.demo --net</i>, <i>python -m pytest -q</i>", body)]],
-              colWidths=[174 * mm])
+    rows = []
+    if video:
+        rows.append([P(f'<b>Demo video:</b> <link href="{video}" color="#1f4e79"><u>{video}</u></link>', body)])
+    rows.append([P(f"<b>Repository:</b> <link href=\"{REPO}\" color=\"#1f4e79\"><u>{REPO}</u></link> "
+                   "&nbsp; Run it: <i>python -m kig.demo --story</i>, <i>python -m kig.demo --net</i>, <i>python -m pytest -q</i>", body)])
+    t = Table(rows, colWidths=[174 * mm])
     t.setStyle(TableStyle([("BOX", (0, 0), (-1, -1), 0.8, ACCENT), ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#eaf1f8")),
                            ("TOPPADDING", (0, 0), (-1, -1), 3), ("BOTTOMPADDING", (0, 0), (-1, -1), 2)]))
     f.append(t)

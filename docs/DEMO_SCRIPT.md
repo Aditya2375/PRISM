@@ -49,7 +49,7 @@ Expected shape of the output:
 "partition": { "node": "node-c", "inside_lease": "served", "after_lease": "node_stale", "after_heal": "revoked" }
 ```
 Say: "These are three separate operating-system processes talking over TCP. The lost device is refused on all
-three, on this machine in tens of milliseconds (about 35 ms on the machine we measured; the run prints the current figure)."
+three, on this machine in tens of milliseconds (median 24.8 ms, slowest 53.3 ms in 20 runs on the machine we measured; the run prints the current figure)."
 
 Then the partition line: "Cut one node off from the primary. For the length of its lease, 2 seconds in this
 test, it can still serve the lost device. After the lease it refuses everyone with `node_stale`. When the

@@ -19,7 +19,7 @@ and measures the time until the last node refuses it. One run on the machine abo
 Re-run on a 4 vCPU Linux x86_64 machine, Python 3.13 (2026-11-27, same command): median 17.4 ms, min 14.0 ms, max 24.6 ms
 to the last node; per node median 15.8 ms and 16.1 ms; the partition check gave served, `node_stale`, `revoked`.
 
-An earlier run on the machine we used for the demo video gave about 35 ms; we quote "about 35 ms" when a single figure is needed. Runs differ by machine and load.
+Earlier informal runs gave about 35 ms; we now quote the median of the 20-run measurement above (24.8 ms, slowest 53.3 ms). Runs differ by machine and load.
 The primary refuses the device at once, with no delay. The only waiting is for the replicas to receive the signed
 revocation. The 5 to 50 ms figure in the in-process simulation is a delay we inject on purpose, not a measurement.
 

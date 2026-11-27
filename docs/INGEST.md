@@ -90,3 +90,8 @@ older than one already seen for that identity raises R10-OUT-OF-ORDER (low). Lin
   (three services inside five minutes) raises R6-LATERAL-SERVICE.
 * Detector memory is bounded (4,096 tracked identities per table, oldest dropped first).
 * The adapter reads files; it does not tail a live stream.
+
+## Memory
+
+`run()` reads every line of the file into memory before it feeds the detector, with or without `--sort`. A very large file needs
+that much memory; split it, or feed it in pieces (one detector can be shared across calls with `seq0`).
