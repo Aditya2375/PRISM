@@ -97,7 +97,7 @@ def metrics() -> Table:
     big = ParagraphStyle("big", fontName="Helvetica-Bold", fontSize=15, leading=17, textColor=ACCENT)
     lab = ParagraphStyle("lab", fontName="Helvetica", fontSize=6.9, leading=8.3, textColor=MUTED)
     cells = [("0.0", "false alerts per 1,000 benign requests (1,265 replayed)"),
-             ("F1 0.90", "precision 1.00, recall 0.82 over 11 labelled scenarios, 2 of them missed on purpose"),
+             ("F1 0.91", "precision 1.00, recall 0.83 over 12 labelled scenarios, 2 of them missed on purpose"),
              ("about 35 ms", "revocation to the last of 3 real node processes; loopback, one clock, one machine"),
              ("30 s | 0 | lease", "grace: rotation | revoked device | cut-off replica (2 s real, 5 s simulated)")]
     t = Table([[Paragraph(a, big) for a, _ in cells], [Paragraph(b, lab) for _, b in cells]], colWidths=[43.5 * mm] * 4)
@@ -146,9 +146,9 @@ def page1(video: str) -> list:
     f.append(B("<b>Log integrity.</b> Events are JSON lines with a signed chain, so user text cannot start a second event or change the actor. "
                "<i>kig doctor</i> and the verifier fail on any edited line."))
     f.append(P("Detection, measured (<i>python -m kig.bench_detect</i>)", h2))
-    f.append(P("Nine explainable rules, no ML. Replaying 1,265 benign requests raised <b>0 false alerts (0.0 per 1,000)</b>. Eleven labelled attack "
-               "scenarios x 20 runs: <b>precision 1.00, recall 0.82, F1 0.90</b>. For the nine scenarios the rules are built for, median time to "
-               "alert is 3 to 75 ms wall and 0 to 220 s on the service clock (a flood summary waits one minute by design; slow guessing is "
+    f.append(P("Eleven explainable rules, no ML. Replaying 1,265 benign requests raised <b>0 false alerts (0.0 per 1,000)</b>. Twelve labelled attack "
+               "scenarios x 20 runs: <b>precision 1.00, recall 0.83, F1 0.91</b>. For the ten scenarios the rules are built for, median time to "
+               "alert is 4 to 120 ms wall and 0 to 220 s on the service clock (a flood summary waits one minute by design; slow guessing is "
                "seen after 8 failures in an hour). Two scenarios are "
                "missed on purpose and counted: a denied probe with valid credentials, and a valid insider reading one new file every ten minutes. The scenarios and rules have the same authors, so this describes these traces, not real traffic. "
                "Wall times are from one Linux x86_64 machine and are not portable.", small))
@@ -201,7 +201,7 @@ def page2(video: str) -> list:
         "Rollback of a whole data directory is detected only against a pin kept outside it (<i>KIG_PIN_FILE</i>). The audit log has no independent completeness proof without an external head.",
         "Private keys sit in files (passphrase-sealed when set). Python cannot wipe memory. No hardware key store driver is shipped.",
         "Metadata (file ids, access lists, device ids, access times) is visible to the service. A malicious replica can ignore revocation for clients that talk only to it.",
-        "Rule-based detection only: it misses a slow valid insider and denied probes (recall 0.82, up from 0.67 after we tuned rules on our own scenarios). Single worker per data directory.",
+        "Rule-based detection only: it misses a slow valid insider and denied probes (recall 0.83, up from 0.67 after we tuned rules on our own scenarios). Single worker per data directory.",
         "Alert attribution is a claim, not proof: an alert names a device and user only when an enrolled device failed a signature check, otherwise it says unknown.",
     ]:
         f.append(B(x, sbullet))
@@ -211,8 +211,8 @@ def page2(video: str) -> list:
         "<b>Double Ratchet, PQXDH, forward secrecy</b>: a file key service, not a messenger, no sessions. A stolen device key opens what was wrapped for it.",
         "<b>Session resumption, message loss and reordering</b>: no sessions or message streams; each request is signed on its own.",
         "<b>Merkle log</b>: the audit log is a signed hash chain without inclusion proofs for third parties.",
-        "<b>Graph or ATT&amp;CK detection, hybrid logical clocks</b>: nine rules over one service's audit events (one flags a device that reads several new files at once), ordered by its own sequence and clock. "
-        "Cross-service paths and mixed clock offsets are not handled; a signed request is refused outside +/-30 s.",
+        "<b>Graph or ATT&amp;CK detection, hybrid logical clocks</b>: eleven rules over audit events. Log lines from other services can be fed in with kig.ingest; an identity reaching new services is flagged, and events from different services within +/-30 s are marked order-uncertain. "
+        "There is no graph model, and ordering across services is not proven; a signed request is refused outside +/-30 s.",
     ]:
         f.append(B(x, sbullet))
     f.append(P("Where each claim is checked", h2))

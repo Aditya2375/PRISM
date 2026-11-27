@@ -197,7 +197,7 @@ Outside logs (`kig.ingest`, synthetic: 40 identities, 6 services, 8 hours, per-s
 
 How to read it. The two misses are in the denominator on purpose: the rules are thresholds over audit events, so they do
 not flag a denied probe (it is a refusal, not an access pattern) or an insider who stays under every window by reading one
-new file every ten minutes. The recall rose from 0.67 to 0.82 because we added rules R6 to R9, changed two scenarios to fit them and added two misses we cannot catch. It is a re-measure after tuning the rules against our own scenarios, not an independent improvement. The access rules (R6, R7) and R8 are new and tuned by us on the same traces we test them on, so
+new file every ten minutes. The recall rose from 0.67 to 0.83 because we added rules R6 to R9, changed two scenarios to fit them and added two misses we cannot catch. It is a re-measure after tuning the rules against our own scenarios, not an independent improvement. The access rules (R6, R7) and R8 are new and tuned by us on the same traces we test them on, so
 treat the thresholds as defaults for a small team, not as measured on real traffic. The scenarios and the
 rules were written by the same people, so this shows what the rules do on these traces and is not a claim about real
 traffic. The flood scenario waits for the one-minute summary, so its 61 s is the rule's design, not slowness.

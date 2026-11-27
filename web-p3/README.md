@@ -22,7 +22,7 @@ It starts the service, the local backend and this app, seeds a lost-phone story 
 - "Verify chain" is the service checking its own log. For independent proof use `verifier/prism_verify.py`.
 - The service and `vite preview` send no X-Frame-Options header. A meta CSP cannot set `frame-ancestors`. Put a proxy with `X-Frame-Options: DENY` in front for any real deployment.
 - CSP `connect-src` is fixed in `index.html` to `127.0.0.1` and `localhost` on ports 8443 and 8788.
-- Detection is rule based, recall 0.67 on our own scenarios. See the main README for the measured numbers and limits.
+- Detection is rule based, recall 0.83 on our own scenarios. See the main README for the measured numbers and limits.
 
 ## Credits
 
