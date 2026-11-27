@@ -14,8 +14,9 @@ DevForge Yugaantar, Track 4: Post-Quantum Security ("Trust, But Verify").
 
 | What | Where |
 |---|---|
-| Live demo (hosted, read-only demo data; first load can take about 40 s) | https://prism-demo-xp6h.onrender.com |
+| Live demo (hosted, demo data; the login tokens are held by the team and are not in this repository; first load can take about 40 s) | https://prism-demo-xp6h.onrender.com |
 | Demo video (intro by Yashaswin, then a screen recording with on-screen captions, 4 minutes, unlisted) | https://youtu.be/RADunkfenVM |
+| Video file (MP4, 22 MB), brief and script as downloads | [Release demo-v1](https://github.com/Aditya2375/PRISM/releases/tag/demo-v1) |
 | 2-page brief (PDF, in the repo) | [docs/PRISM_brief.pdf](docs/PRISM_brief.pdf) |
 | Narration script (PDF; the video uses only a short spoken intro) | [docs/PRISM_narration_script.pdf](docs/PRISM_narration_script.pdf) |
 | Run it yourself, offline after install | [Try it in 90 seconds](#try-it-in-90-seconds) |
