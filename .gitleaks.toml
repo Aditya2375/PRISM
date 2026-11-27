@@ -1,5 +1,6 @@
 # No test keys are committed: tests generate every key and passphrase at run time (tests/conftest.py, v1_data).
+# Test-only keys from earlier commits (tests/fixtures/v1/) stay in git history and are allowlisted.
 # Only the published NIST known-answer vectors are allowlisted; they are public test data.
 [allowlist]
 description = "public NIST ACVP vectors"
-paths = ['''tests/vectors/''']
+paths = ['''tests/vectors/''', '''tests/fixtures/v1/''']

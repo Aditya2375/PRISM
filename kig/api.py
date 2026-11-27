@@ -94,7 +94,7 @@ def create_app(data_dir: str | Path, service: GuardService | None = None,
         hops = int(raw_hops)
     svc = service or GuardService(data_dir)
     token = _operator_token(data_dir)
-    app = FastAPI(title="Key Identity Guard", version="0.1.0", docs_url=None, redoc_url=None)
+    app = FastAPI(title="Key Identity Guard", version="0.1.0", docs_url=None, redoc_url=None, openapi_url=None)
     app.state.service = svc
     if cors_origins is None:                      # off unless asked for: a page on another origin is otherwise blocked
         raw_env = os.environ.get("KIG_CORS_ORIGINS", "")

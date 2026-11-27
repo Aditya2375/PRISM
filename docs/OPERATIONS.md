@@ -32,6 +32,13 @@ It checks `/healthz`, the security headers, that a protected path refuses a requ
 that the tokens you pass work. Exit code 0 means every check passed. Run it after each deploy. `scripts/readme_smoke.sh` is the
 other smoke test: it follows the README from a fresh copy and runs in CI.
 
+## Failed-token limits
+
+The service port does not slow down a client that keeps sending wrong tokens beyond the built-in rate limit, and the
+rate limit counts per source address. Put the service behind a reverse proxy that limits failed authentications (for example
+by returning 429 after repeated 401 replies) before it faces anything but a trusted network. Detection rules R3 and R8 are
+keyed by source address, so one attacker spread over many addresses is not caught by them. See `THREAT_MODEL.md`, "Known limits".
+
 ## Health and monitoring
 
 * `GET /healthz`: the service answers 200. The hosted demo's `/healthz` answers 200 only when both of its backends answer

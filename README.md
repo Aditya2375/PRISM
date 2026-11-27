@@ -10,7 +10,16 @@ DevForge Yugaantar, Track 4: Post-Quantum Security ("Trust, But Verify").
 
 **Contents:** [Try it](#try-it-in-90-seconds) | [Architecture](#architecture) | [What is different](#what-is-different-here) | [Setup](#clean-machine-setup) | [Grace period](#grace-period-and-cutoff-the-organizers-wording) | [Detection, measured](#detection-measured-python--m-kigbench_detect) | [API](#api) | [Web console](#web-console) | [Layout](#layout) | [Licence](#licence)
 
-**Demo video (screen recording, no voice-over, unlisted):** https://youtu.be/-lAP937-J3k
+**Start here**
+
+| What | Where |
+|---|---|
+| Live demo (hosted, read-only demo data; first load can take about 40 s) | https://prism-demo-xp6h.onrender.com |
+| Demo video (intro by Yashaswin, then a screen recording with on-screen captions, 4 minutes, unlisted) | https://youtu.be/RADunkfenVM |
+| 2-page brief (PDF, in the repo) | [docs/PRISM_brief.pdf](docs/PRISM_brief.pdf) |
+| Narration script (PDF; the video uses only a short spoken intro) | [docs/PRISM_narration_script.pdf](docs/PRISM_narration_script.pdf) |
+| Run it yourself, offline after install | [Try it in 90 seconds](#try-it-in-90-seconds) |
+| What is claimed and what is not | [THREAT_MODEL.md](THREAT_MODEL.md), [docs/QA.md](docs/QA.md) |
 
 ## Try it in 90 seconds
 
@@ -21,6 +30,8 @@ python -m kig.demo --net       # the same revocation across 3 real node processe
 python -m kig.bench            # measured cost of put, fetch, rotate, backup, restore
 python -m pytest -q            # the full suite
 ```
+
+The hosted demo runs on a free plan that sleeps when idle, so the first load can take about 40 seconds.
 
 `--story` exits 1 if any of its checks fails. Every claim row it prints points at the step that shows it.
 

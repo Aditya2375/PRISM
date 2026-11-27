@@ -53,6 +53,10 @@ An `outcome` listed in `failure_outcomes` (default: fail, failed, failure, denie
 403, false) turns an `access` or `other` line into `auth_failure`. That is how a plain web access log with status codes
 works without an event map.
 
+The default list is short on purpose. A service that reports failures as `error`, `rejected`, `invalid`, `500` or any other word is not
+recognised by default, and its failed logins are then read as plain access. Add every word your log uses for a failure to
+`failure_outcomes` in the config file. Check this before you trust a quiet result.
+
 ## Config file
 
 Only the keys you give change; `fields` and `events` are merged into the defaults.

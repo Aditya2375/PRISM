@@ -1,6 +1,6 @@
 # P.R.I.S.M. brief
 
-Demo video (screen recording, no voice-over, unlisted): https://youtu.be/-lAP937-J3k
+Demo video (intro by Yashaswin, then a screen recording with on-screen captions, 4 minutes, unlisted): https://youtu.be/RADunkfenVM
 
 **Post-quantum Resilient Identity & Security Management.** DevForge Yugaantar, Track 4: Post-Quantum Security
 ("Trust, But Verify"). Team "Do You Care". Repository: https://github.com/Aditya2375/PRISM (MIT, Python 3.12 and 3.13 in CI).
@@ -82,6 +82,7 @@ Shamir for the optional key split. All code written during the event; every comm
 * A stolen full admin device is an admin until the host removes it. The 15 minute cooling-off uses the service clock.
 * The audit log is a hash chain. Removing its last entries together with its anchor is undetectable unless you keep a
   head elsewhere; the verifier says so and exits 2 in that case.
+* Failed-login detection counts per source address, so one identity guessed from many addresses is not caught; limit failed tokens at a proxy.
 * The server is trusted at first contact for the device directory; the enrolment fingerprint check narrows that.
 * Signatures are post-quantum only (not hybrid). Python cannot wipe memory. No hardware key store driver is shipped.
 
