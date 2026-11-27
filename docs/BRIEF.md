@@ -1,5 +1,7 @@
 # P.R.I.S.M. brief
 
+Demo video (screen recording, no voice-over, unlisted): https://youtu.be/-lAP937-J3k
+
 **Post-quantum Resilient Identity & Security Management.** DevForge Yugaantar, Track 4: Post-Quantum Security
 ("Trust, But Verify"). Team "Do You Care". Repository: https://github.com/Aditya2375/PRISM (MIT, Python 3.12 and 3.13 in CI).
 

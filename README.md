@@ -10,6 +10,8 @@ DevForge Yugaantar, Track 4: Post-Quantum Security ("Trust, But Verify").
 
 **Contents:** [Try it](#try-it-in-90-seconds) | [Architecture](#architecture) | [What is different](#what-is-different-here) | [Setup](#clean-machine-setup) | [Grace period](#grace-period-and-cutoff-the-organizers-wording) | [Detection, measured](#detection-measured-python--m-kigbench_detect) | [API](#api) | [Web console](#web-console) | [Layout](#layout) | [Licence](#licence)
 
+**Demo video (screen recording, no voice-over, unlisted):** https://youtu.be/-lAP937-J3k
+
 ## Try it in 90 seconds
 
 ```bash
