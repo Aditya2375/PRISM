@@ -58,6 +58,7 @@ class Detector:
     removed_at: dict[str, int] = field(default_factory=dict)  # device -> seq of revoke/lost
     failures: dict[tuple[str, str], list[tuple[float, int]]] = field(default_factory=dict)
     first_device_ts: dict[str, float] = field(default_factory=dict)
+    admin_created_users: set[str] = field(default_factory=set)  # users created with create_user(role="admin")
     max_tracked: int = 4096
     last_alert: dict[str, float] = field(default_factory=dict)
     dedupe_s: int = 60
@@ -106,6 +107,18 @@ class Detector:
                 self.owner_of[str(d["device"])] = str(d["user"])
                 if len(self.owner_of) > self.max_tracked:
                     self.owner_of.pop(next(iter(self.owner_of)))
+            if d["user"] in self.admin_created_users:
+                alerts.append(
+                    Alert(
+                        "R4-PRIVILEGE-ESCALATION",
+                        "critical",
+                        f"User {d['user']} was promoted from creation as admin and enrolled their first device",
+                        [seq],
+                        response="recorded; demote with set_role to undo",
+                        subject=d["user"],
+                        user=str(d["user"]),
+                    )
+                )
         elif t == "auth.revoked_device_use":
             dev = d["device"]
             if self._dup(f"R1:{dev}", ts):
@@ -182,6 +195,8 @@ class Detector:
                     )
                 )
                 self.failures[key] = []
+        elif t == "user.created" and d.get("role") == "admin":
+            self.admin_created_users.add(str(d["user"]))
         elif t == "role.changed" and d.get("new") == "admin" and d.get("old") != "admin":
             born = self.first_device_ts.get(d["user"])
             fresh = born is not None and ts - born < FRESH_ACCOUNT_S

@@ -6,5 +6,20 @@ data/
 *.key
 *.egg-info/
 # throwaway keys for format tests, see tests/fixtures/README.md
+# thrown-away test keys (regenerated at runtime via conftest fixtures)
+tests/fixtures/v1/alice-laptop.key.json
+tests/fixtures/v1/backup.key
+tests/fixtures/v1/backup.pub
+tests/fixtures/v1/frozen.bak
+tests/fixtures/v1/data/server_sign.key
+tests/fixtures/v1/data/server_sign.pub
 !tests/fixtures/
 !tests/fixtures/**
+
+.idea/
+.venv/
+__pycache__/
+.pytest_cache/
+test_logs/
+_test_report_*.txt
+test_*.txt

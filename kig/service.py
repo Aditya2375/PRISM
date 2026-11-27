@@ -90,11 +90,15 @@ def _atomic_write(path: Path, data: bytes, mode: int = 0o600, hook: Callable[[],
         except OSError:
             pass
         raise
-    dfd = os.open(path.parent, os.O_RDONLY)
+    dfd = None
     try:
+        dfd = os.open(path.parent, os.O_RDONLY)
         os.fsync(dfd)
+    except OSError:
+        pass
     finally:
-        os.close(dfd)
+        if dfd is not None:
+            os.close(dfd)
 
 
 def _fp_equal(a: Any, b: str) -> bool:
@@ -186,10 +190,16 @@ class GuardService:
             self._persist()
 
     def _load_server_key(self) -> None:
-        import fcntl
         self.dir.mkdir(parents=True, exist_ok=True)
         with open(self.dir / ".keylock", "a") as lk:       # two first starts must not each make a key
-            fcntl.flock(lk, fcntl.LOCK_EX)
+            try:
+                import fcntl
+
+                fcntl.flock(lk, fcntl.LOCK_EX)
+            except ImportError:
+                import msvcrt
+
+                msvcrt.locking(lk.fileno(), msvcrt.LK_NBLCK, 1)
             self._load_server_key_locked()
 
     def _load_server_key_locked(self) -> None:
@@ -319,13 +329,23 @@ class GuardService:
     def _lock_dir(self) -> None:
         """One service process per data directory. A second process (for example uvicorn --workers 2) would write the
         same journal and corrupt it, so it refuses to start. Within one process a restart in tests is allowed."""
-        import fcntl
         key = str(self.dir.resolve())
         if key in _DIR_LOCKS:
             return
         fd = os.open(self.dir / ".datalock", os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0), 0o600)
         try:
+            import fcntl
+
             fcntl.lockf(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except ImportError:
+            # Windows: use msvcrt instead of fcntl
+            try:
+                import msvcrt
+
+                msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+            except OSError:
+                os.close(fd)
+                raise RuntimeError(f"another process is already serving {self.dir}; run one worker per data directory") from None
         except OSError:
             os.close(fd)
             raise RuntimeError(f"another process is already serving {self.dir}; run one worker per data directory") from None

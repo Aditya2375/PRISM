@@ -457,6 +457,36 @@ class Client:
     def _recipients(self, acl: list[str]) -> dict[str, str]:
         devs = self.call("eligible", users=acl)["devices"]
         self._check_devices(devs)
+        # Verify each recipient ourselves – never trust the server's "eligible" list.
+        # The server may include revoked devices or devices whose user is not in the ACL.
+        for d in devs:
+            if d == self.dev.device_id:
+                continue
+            # Determine the user for this device
+            if d in self._trusted:
+                user = self._trusted[d][0]
+            else:
+                # Look up the user from the directory
+                dirm = self._directory([d])
+                info = dirm.get(d)
+                if not isinstance(info, dict):
+                    raise c.CryptoError(f"device {d} is not enrolled and has no directory entry")
+                user = info.get("user")
+            if not user:
+                raise c.CryptoError(f"device {d} has no associated user")
+            if user not in acl:
+                raise c.CryptoError(
+                    f"device {d} user '{user}' is not in the file's ACL; refusing to wrap key for unlisted user"
+                )
+            # Check that the device is not revoked by verifying it still has an active status
+            # through its directory entry; a revoked device would not pass the enrolment proof
+            if d not in self._trusted:
+                try:
+                    self._prove(d, dirm)
+                except c.CryptoError:
+                    raise c.CryptoError(
+                        f"device {d} is revoked or otherwise not enrollee; refusing to wrap key for revoked device"
+                    )
         return devs
 
     # -- file operations -------------------------------------------------------

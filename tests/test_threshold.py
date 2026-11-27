@@ -43,6 +43,7 @@ def test_bad_parameters():
             t.split(b"s", k, n)
 
 
+@pytest.mark.skipif(os.name == "nt", reason="SIGALRM not available on Windows")
 def test_hostile_share_fields_never_hang_or_raise_other_errors():
     import json
     import signal

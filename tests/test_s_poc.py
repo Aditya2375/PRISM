@@ -41,6 +41,7 @@ def test_S4_more_than_k_shares_with_one_corrupt_still_recovers_or_names_it():
     except T.ThresholdError:
         pytest.fail("4 good shares offered with the corrupt one first: combine fails instead of trying subsets or naming the bad share")
 
+@pytest.mark.skipif(os.name == "nt", reason="SIGALRM not available on Windows")
 def test_S5_negative_share_index_must_not_hang():
     import signal
     sh = T.split(S, 3, 5); ds = [json.loads(x) for x in sh[:3]]; ds[0]["i"] = -1

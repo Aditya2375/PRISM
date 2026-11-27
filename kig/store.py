@@ -428,8 +428,12 @@ def _atomic_write(path: Path, data: bytes, mode: int = 0o600, hook: Callable[[],
         except OSError:
             pass
         raise
-    dfd = os.open(path.parent, os.O_RDONLY)
+    dfd = None
     try:
+        dfd = os.open(path.parent, os.O_RDONLY)
         os.fsync(dfd)
+    except OSError:
+        pass
     finally:
-        os.close(dfd)
+        if dfd is not None:
+            os.close(dfd)

@@ -110,8 +110,12 @@ def write_atomic(path: str | Path, data: bytes, mode: int = 0o600, exclusive: bo
         except FileNotFoundError:
             pass
         raise
-    dfd = os.open(p.parent, os.O_RDONLY)
+    dfd = None
     try:
+        dfd = os.open(p.parent, os.O_RDONLY)
         os.fsync(dfd)
+    except OSError:
+        pass
     finally:
-        os.close(dfd)
+        if dfd is not None:
+            os.close(dfd)
